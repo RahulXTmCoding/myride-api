@@ -22,7 +22,7 @@ services:
     command: npm run start:dev
 
   postgres:
-    image: postgres:16-alpine
+    image: postgis/postgis:16-3.4-alpine
     container_name: myride-postgres
     restart: unless-stopped
     environment:
@@ -33,6 +33,7 @@ services:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-myride} -d ${POSTGRES_DB:-myride}']
       interval: 10s
@@ -49,6 +50,23 @@ services:
       - redis_data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: myride-livekit
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    ports:
+      - '7880:7880'   # WebSocket
+      - '7881:7881'   # HTTP API
+      - '7882:7882/udp'  # WebRTC media
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:7881/ || exit 1']
       interval: 10s
       timeout: 5s
       retries: 5

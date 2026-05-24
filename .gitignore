@@ -1,6 +1,55 @@
+# Dependencies
 node_modules/
 dist/
 coverage/
+
+# Environment & Secrets - NEVER COMMIT THESE
 .env
-.DS_Store
+.env.*
+!.env.example
+firebase-service-account.json
+*.pem
+*.key
+*.p12
+*.p8
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+myride.db
+
+# Logs
+*.log
 npm-debug.log*
+backend.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude AI session files
+.claude/
+
+# Test/dev scripts (temp files)
+test-db-connection.js
+test-firebase-token.js
+test-firebase-login.bat
+test-firebase-login.sh
+wait-for-docker.bat
+fix-docker.bat
+fix-wsl-error.bat
+enable-wsl2.bat
+enable-vm-platform.bat
+setup-database.bat
+setup-and-start.bat
+setup-db.sql
+setup-postgres.sql
+status.bat
+START_HERE.txt
+MANUAL_DOCKER_FIX.txt
+DOCKER_FIX_GUIDE.md

@@ -1,0 +1,27 @@
+port: 7880
+bind_addresses:
+  - ""
+
+rtc:
+  # UDP ports for WebRTC
+  port_range_start: 50000
+  port_range_end: 50100
+
+  # Use docker internal IP for development
+  use_external_ip: false
+
+# Development keys (CHANGE IN PRODUCTION!)
+keys:
+  devkey: secret-dev-key-change-this-in-production
+
+# Logging
+logging:
+  level: info
+
+# Rooms configuration
+room:
+  # Auto-delete empty rooms after 5 minutes
+  empty_timeout: 300
+
+  # Max participants per room (myRide max: 20)
+  max_participants: 20
