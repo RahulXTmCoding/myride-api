@@ -147,3 +147,25 @@ Endpoints needed:
 - `POST   /api/v1/trips/:id/complete` — complete trip
 - `POST   /api/v1/trips/:id/participants` — invite participant
 - `POST   /api/v1/trips/:id/stops` — add stop
+
+## Standing Instructions for Claude (applies on any machine)
+
+### After Every Git Push — MANDATORY
+After pushing any changes to this repo, you MUST:
+
+1. **Update this CLAUDE.md** to reflect the new state:
+   - Move completed items from ❌ to ✅ in the Done/Not Built lists
+   - Update the "Current Status" date and completion percentage
+   - Update the "Next Task to Implement" section
+   - Add any new files/modules to the Architecture tree
+
+2. **Commit and push the updated CLAUDE.md** in the same batch:
+   ```bash
+   git add CLAUDE.md
+   git commit -m "docs: update CLAUDE.md status after <feature name>"
+   git push
+   ```
+
+3. **Never push code without also pushing an updated CLAUDE.md.**
+
+This keeps the checkpoint always in sync so the project can be resumed from any machine.
