@@ -1,4 +1,13 @@
-import { IsString, IsNotEmpty, Matches, Length } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  Matches,
+  Length,
+  IsOptional,
+  IsUrl,
+  IsObject,
+  MaxLength,
+} from 'class-validator';
 
 export class RequestOtpDto {
   @IsString()
@@ -25,4 +34,20 @@ export class RefreshTokenDto {
   @IsString()
   @IsNotEmpty()
   refresh_token: string;
+}
+
+export class UpdateProfileDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsUrl()
+  avatar_url?: string;
+
+  @IsOptional()
+  @IsObject()
+  vehicle?: Record<string, unknown>;
 }

@@ -9,6 +9,7 @@ import { FirebaseService } from './firebase.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../users/entities/user.entity';
+import { RedisProvider } from './redis.provider';
 
 @Module({
   imports: [
@@ -26,7 +27,7 @@ import { User } from '../users/entities/user.entity';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, FirebaseService, JwtStrategy, JwtAuthGuard],
+  providers: [AuthService, FirebaseService, JwtStrategy, JwtAuthGuard, RedisProvider],
   exports: [AuthService, FirebaseService, JwtAuthGuard],
 })
 export class AuthModule {}
