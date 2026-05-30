@@ -1,14 +1,36 @@
-import { Injectable, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Logger,
+  Inject,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
+import type Redis from 'ioredis';
 import { User } from '../users/entities/user.entity';
 import { FirebaseService } from './firebase.service';
+import { REDIS_CLIENT } from './redis.provider';
 
-// In-memory OTP storage for development (replace with Redis in production)
-const otpStore = new Map<string, { code: string; expiresAt: number }>();
+const OTP_TTL_SECONDS = 300; // 5 minutes
+const RESEND_COOLDOWN_SECONDS = 60;
+const MAX_OTP_ATTEMPTS = 3;
+const LOCKOUT_SECONDS = 15 * 60; // 15 minutes
+
+export interface PublicUser {
+  id: string;
+  phone: string;
+  name: string | null;
+  avatar_url: string | null;
+  is_onboarding_complete: boolean;
+  created_at: Date;
+  vehicle?: unknown;
+}
 
 @Injectable()
 export class AuthService {
@@ -20,104 +42,171 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private firebaseService: FirebaseService,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
+
+  private otpKey(phone: string): string {
+    return `otp:code:${phone}`;
+  }
+  private cooldownKey(phone: string): string {
+    return `otp:cooldown:${phone}`;
+  }
+  private attemptsKey(phone: string): string {
+    return `otp:attempts:${phone}`;
+  }
+  private lockKey(phone: string): string {
+    return `otp:lock:${phone}`;
+  }
+
+  private toPublicUser(user: User): PublicUser {
+    return {
+      id: user.id,
+      phone: user.phone,
+      name: user.name ?? null,
+      avatar_url: user.profile_photo_url ?? null,
+      is_onboarding_complete: !!user.name,
+      created_at: user.created_at,
+    };
+  }
 
   /**
    * Request OTP for phone number
-   * - Development: Generate and log OTP
-   * - Production: Use Firebase (sends SMS automatically)
+   * - Dev: generate, store in Redis, log to console
+   * - Firebase (prod): delegates to Firebase
+   * Enforces 60s resend cooldown per phone.
    */
-  async requestOtp(phone: string): Promise<{ message: string; expires_in: number; mode: string }> {
-    // Validate phone number format
+  async requestOtp(
+    phone: string,
+  ): Promise<{ success: true; expires_in: number; resend_after: number }> {
     if (!phone.match(/^\+?[1-9]\d{1,14}$/)) {
-      throw new BadRequestException('Invalid phone number format (use E.164 format: +1234567890)');
+      throw new BadRequestException({
+        error: 'INVALID_PHONE',
+        message: 'Phone must be E.164',
+      });
+    }
+
+    // Cooldown check
+    const cooldownTtl = await this.redis.ttl(this.cooldownKey(phone));
+    if (cooldownTtl > 0) {
+      throw new HttpException(
+        {
+          error: 'RESEND_TOO_SOON',
+          message: `Wait ${cooldownTtl} seconds before resending`,
+          retry_after: cooldownTtl,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     const isFirebaseEnabled = this.firebaseService.isFirebaseEnabled();
+    const isProd = this.configService.get<string>('NODE_ENV') === 'production';
 
-    if (isFirebaseEnabled) {
-      // Production mode: Firebase handles OTP sending
-      this.logger.log(`📱 Firebase will send OTP to ${phone}`);
-
+    if (isFirebaseEnabled && isProd) {
+      // Firebase sends the SMS. We still set cooldown.
+      await this.redis.set(
+        this.cooldownKey(phone),
+        '1',
+        'EX',
+        RESEND_COOLDOWN_SECONDS,
+      );
+      this.logger.log(`Firebase will send OTP to ${phone}`);
       return {
-        message: `OTP will be sent to ${phone} via SMS`,
-        expires_in: 300, // 5 minutes
-        mode: 'firebase',
-      };
-    } else {
-      // Development mode: Console-based OTP
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
-
-      // Store OTP in memory
-      otpStore.set(phone, { code: otp, expiresAt });
-
-      // Log OTP to console
-      this.logger.log(`🔐 [DEV MODE] OTP for ${phone}: ${otp} (expires in 5 minutes)`);
-
-      // Clean up expired OTPs
-      this.cleanupExpiredOtps();
-
-      return {
-        message: `OTP generated (check server console)`,
-        expires_in: 300,
-        mode: 'development',
+        success: true,
+        expires_in: OTP_TTL_SECONDS,
+        resend_after: RESEND_COOLDOWN_SECONDS,
       };
     }
+
+    // Dev mode: generate, store, log
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await this.redis.set(this.otpKey(phone), otp, 'EX', OTP_TTL_SECONDS);
+    await this.redis.del(this.attemptsKey(phone));
+    await this.redis.set(
+      this.cooldownKey(phone),
+      '1',
+      'EX',
+      RESEND_COOLDOWN_SECONDS,
+    );
+
+    this.logger.log(`[OTP] ${phone} -> ${otp}`);
+
+    return {
+      success: true,
+      expires_in: OTP_TTL_SECONDS,
+      resend_after: RESEND_COOLDOWN_SECONDS,
+    };
   }
 
   /**
-   * Login with phone and OTP (development mode)
-   * OR Login with Firebase ID token (production mode)
+   * Login with phone and OTP
    */
-  async login(phone: string, otp: string): Promise<{
+  async login(
+    phone: string,
+    otp: string,
+  ): Promise<{
     access_token: string;
     refresh_token: string;
-    user: User;
+    user: PublicUser;
   }> {
-    const isFirebaseEnabled = this.firebaseService.isFirebaseEnabled();
-
-    if (!isFirebaseEnabled) {
-      // Development mode: Verify OTP from memory
-      return this.loginWithDevOtp(phone, otp);
-    } else {
-      // Production mode: Should not be called (use loginWithFirebase instead)
-      throw new BadRequestException('Use Firebase authentication in production mode');
-    }
-  }
-
-  /**
-   * Login with development OTP (console-based)
-   */
-  private async loginWithDevOtp(phone: string, otp: string): Promise<{
-    access_token: string;
-    refresh_token: string;
-    user: User;
-  }> {
-    // Get stored OTP
-    const storedOtp = otpStore.get(phone);
-
-    if (!storedOtp) {
-      throw new UnauthorizedException('No OTP request found. Please request OTP first.');
+    // Check lockout first
+    const lockTtl = await this.redis.ttl(this.lockKey(phone));
+    if (lockTtl > 0) {
+      const unlockAt = new Date(Date.now() + lockTtl * 1000).toISOString();
+      throw new HttpException(
+        { error: 'ACCOUNT_LOCKED', unlock_at: unlockAt },
+        HttpStatus.LOCKED,
+      );
     }
 
-    // Check if expired
-    if (Date.now() > storedOtp.expiresAt) {
-      otpStore.delete(phone);
-      throw new UnauthorizedException('OTP expired. Please request a new one.');
+    const stored = await this.redis.get(this.otpKey(phone));
+    if (!stored) {
+      throw new HttpException(
+        { error: 'OTP_EXPIRED' },
+        HttpStatus.GONE,
+      );
     }
 
-    // Verify OTP
-    if (storedOtp.code !== otp) {
-      throw new UnauthorizedException('Invalid OTP code');
+    if (stored !== otp) {
+      // Increment attempts within the OTP window
+      const attempts = await this.redis.incr(this.attemptsKey(phone));
+      if (attempts === 1) {
+        // Align attempts TTL with OTP window
+        const otpTtl = await this.redis.ttl(this.otpKey(phone));
+        if (otpTtl > 0) {
+          await this.redis.expire(this.attemptsKey(phone), otpTtl);
+        }
+      }
+
+      if (attempts >= MAX_OTP_ATTEMPTS) {
+        await this.redis.set(
+          this.lockKey(phone),
+          '1',
+          'EX',
+          LOCKOUT_SECONDS,
+        );
+        await this.redis.del(this.otpKey(phone));
+        await this.redis.del(this.attemptsKey(phone));
+        const unlockAt = new Date(
+          Date.now() + LOCKOUT_SECONDS * 1000,
+        ).toISOString();
+        throw new HttpException(
+          { error: 'ACCOUNT_LOCKED', unlock_at: unlockAt },
+          HttpStatus.LOCKED,
+        );
+      }
+
+      const remaining = Math.max(0, MAX_OTP_ATTEMPTS - attempts);
+      throw new HttpException(
+        { error: 'INVALID_OTP', attempts_remaining: remaining },
+        HttpStatus.BAD_REQUEST,
+      );
     }
 
-    // OTP verified, remove from store
-    otpStore.delete(phone);
+    // Success — clear OTP/attempts
+    await this.redis.del(this.otpKey(phone));
+    await this.redis.del(this.attemptsKey(phone));
 
-    // Find or create user
     let user = await this.userRepository.findOne({ where: { phone } });
-
     if (!user) {
       user = this.userRepository.create({
         phone,
@@ -125,46 +214,39 @@ export class AuthService {
         is_active: true,
       });
       user = await this.userRepository.save(user);
-      this.logger.log(`✅ New user registered: ${phone}`);
+      this.logger.log(`New user registered: ${phone}`);
     }
 
     if (!user.is_active) {
-      throw new UnauthorizedException('Account is deactivated');
+      throw new HttpException(
+        { error: 'ACCOUNT_SUSPENDED' },
+        HttpStatus.FORBIDDEN,
+      );
     }
 
-    // Generate tokens
     const tokens = await this.generateTokens(user);
-
-    // Save refresh token (hashed)
     user.refresh_token = await bcrypt.hash(tokens.refresh_token, 10);
     await this.userRepository.save(user);
 
-    return { ...tokens, user };
+    return { ...tokens, user: this.toPublicUser(user) };
   }
 
-  /**
-   * Login with Firebase ID token (production mode)
-   */
   async loginWithFirebase(firebaseToken: string): Promise<{
     access_token: string;
     refresh_token: string;
-    user: User;
+    user: PublicUser;
   }> {
     if (!this.firebaseService.isFirebaseEnabled()) {
-      throw new BadRequestException('Firebase is not enabled. Use development OTP login.');
+      throw new BadRequestException('Firebase is not enabled.');
     }
 
-    // Verify Firebase token
     const decodedToken = await this.firebaseService.verifyIdToken(firebaseToken);
     const phone = decodedToken.phone_number;
-
     if (!phone) {
       throw new UnauthorizedException('Phone number not found in Firebase token');
     }
 
-    // Find or create user
     let user = await this.userRepository.findOne({ where: { phone } });
-
     if (!user) {
       user = this.userRepository.create({
         phone,
@@ -172,132 +254,125 @@ export class AuthService {
         is_active: true,
       });
       user = await this.userRepository.save(user);
-      this.logger.log(`✅ New user registered via Firebase: ${phone}`);
     }
 
     if (!user.is_active) {
-      throw new UnauthorizedException('Account is deactivated');
+      throw new HttpException(
+        { error: 'ACCOUNT_SUSPENDED' },
+        HttpStatus.FORBIDDEN,
+      );
     }
 
-    // Generate JWT tokens
     const tokens = await this.generateTokens(user);
-
-    // Save refresh token
     user.refresh_token = await bcrypt.hash(tokens.refresh_token, 10);
     await this.userRepository.save(user);
 
-    return { ...tokens, user };
+    return { ...tokens, user: this.toPublicUser(user) };
   }
 
-  /**
-   * Refresh access token
-   */
-  async refreshToken(refreshToken: string): Promise<{
-    access_token: string;
-  }> {
+  async refreshToken(
+    refreshToken: string,
+  ): Promise<{ access_token: string; refresh_token: string }> {
     try {
       const payload = this.jwtService.verify(refreshToken, {
         secret: this.configService.get('JWT_SECRET'),
       });
 
-      const user = await this.userRepository.findOne({
-        where: { id: payload.sub },
-      });
+      const user = await this.userRepository
+        .createQueryBuilder('user')
+        .addSelect('user.refresh_token')
+        .where('user.id = :id', { id: payload.sub })
+        .getOne();
 
       if (!user || !user.refresh_token) {
-        throw new UnauthorizedException('Invalid refresh token');
+        throw new UnauthorizedException({ error: 'INVALID_REFRESH_TOKEN' });
       }
 
-      // Verify refresh token matches stored hash
       const isValid = await bcrypt.compare(refreshToken, user.refresh_token);
       if (!isValid) {
-        throw new UnauthorizedException('Invalid refresh token');
+        throw new UnauthorizedException({ error: 'INVALID_REFRESH_TOKEN' });
       }
 
-      // Generate new access token
-      const accessToken = this.jwtService.sign(
-        { sub: user.id, phone: user.phone },
-        {
-          expiresIn: this.configService.get('JWT_ACCESS_EXPIRATION'),
-        },
-      );
-
-      return { access_token: accessToken };
-    } catch (error) {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+      const tokens = await this.generateTokens(user);
+      user.refresh_token = await bcrypt.hash(tokens.refresh_token, 10);
+      await this.userRepository.save(user);
+      return tokens;
+    } catch {
+      throw new UnauthorizedException({ error: 'INVALID_REFRESH_TOKEN' });
     }
   }
 
-  /**
-   * Get current user from token
-   */
-  async getCurrentUser(userId: string): Promise<User> {
-    const user = await this.userRepository.findOne({
-      where: { id: userId },
-    });
+  async getCurrentUser(userId: string): Promise<PublicUser> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+    return this.toPublicUser(user);
+  }
 
+  async updateProfile(
+    userId: string,
+    updates: { name?: string; avatar_url?: string; vehicle?: unknown },
+  ): Promise<PublicUser & { vehicle?: unknown }> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
 
-    return user;
+    if (updates.name !== undefined) {
+      const trimmed = updates.name.trim();
+      if (trimmed.length < 1 || trimmed.length > 100) {
+        throw new BadRequestException({
+          error: 'INVALID_NAME',
+          message: 'Name must be 1-100 chars',
+        });
+      }
+      user.name = trimmed;
+    }
+
+    if (updates.avatar_url !== undefined) {
+      user.profile_photo_url = updates.avatar_url;
+    }
+
+    // Persist vehicle inside preferences jsonb (no schema change)
+    let vehicle: unknown | undefined;
+    if (updates.vehicle !== undefined) {
+      const prefs = (user.preferences ?? {}) as Record<string, unknown>;
+      prefs.vehicle = updates.vehicle;
+      user.preferences = prefs as User['preferences'];
+      vehicle = updates.vehicle;
+    } else if (user.preferences && (user.preferences as Record<string, unknown>).vehicle) {
+      vehicle = (user.preferences as Record<string, unknown>).vehicle;
+    }
+
+    const saved = await this.userRepository.save(user);
+    const publicUser = this.toPublicUser(saved);
+    return { ...publicUser, vehicle };
   }
 
-  /**
-   * Logout user (invalidate refresh token)
-   */
-  async logout(userId: string): Promise<{ message: string }> {
+  async logout(userId: string): Promise<{ success: true }> {
     await this.userRepository.update(userId, { refresh_token: undefined });
-    return { message: 'Logged out successfully' };
+    return { success: true };
   }
 
-  /**
-   * Generate JWT tokens
-   */
-  private async generateTokens(user: User): Promise<{
-    access_token: string;
-    refresh_token: string;
-  }> {
+  private async generateTokens(
+    user: User,
+  ): Promise<{ access_token: string; refresh_token: string }> {
     const payload = { sub: user.id, phone: user.phone };
-
     const accessToken = this.jwtService.sign(payload, {
-      expiresIn: this.configService.get('JWT_ACCESS_EXPIRATION'),
+      expiresIn: this.configService.get('JWT_ACCESS_EXPIRATION') ?? '15m',
     });
-
     const refreshToken = this.jwtService.sign(payload, {
-      expiresIn: this.configService.get('JWT_REFRESH_EXPIRATION'),
+      expiresIn: this.configService.get('JWT_REFRESH_EXPIRATION') ?? '30d',
     });
-
-    return {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-    };
+    return { access_token: accessToken, refresh_token: refreshToken };
   }
 
-  /**
-   * Validate user by ID (used by JWT strategy)
-   */
   async validateUser(userId: string): Promise<User> {
-    const user = await this.userRepository.findOne({
-      where: { id: userId },
-    });
-
+    const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user || !user.is_active) {
       throw new UnauthorizedException('User not found or inactive');
     }
-
     return user;
-  }
-
-  /**
-   * Clean up expired OTPs from memory
-   */
-  private cleanupExpiredOtps() {
-    const now = Date.now();
-    for (const [phone, data] of otpStore.entries()) {
-      if (now > data.expiresAt) {
-        otpStore.delete(phone);
-      }
-    }
   }
 }
