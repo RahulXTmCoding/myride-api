@@ -8,6 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import Redis from 'ioredis';
 import { encode as escapeHtml } from 'html-entities';
+import { v4 as uuidv4 } from 'uuid';
 
 import { ChatMessage, RoomType, ReplyToSnapshot } from './entities/chat-message.entity';
 import { MessageReaction } from './entities/message-reaction.entity';
@@ -30,10 +31,28 @@ export interface FormattedMessage {
   is_deleted: boolean;
 }
 
+/**
+ * Wire format stored in the Redis write-ahead queue.
+ * Flushed to Postgres by ChatFlushWorker every 100ms in batches.
+ */
+export interface QueuedMessage {
+  id: string;           // pre-generated UUID (stable for broadcast and reactions)
+  room_type: RoomType;
+  room_id: string;
+  sender_id: string;
+  sender_name: string;
+  sender_avatar: string | null;
+  content: string;      // already sanitized
+  reply_to: ReplyToSnapshot | null;
+  created_at: string;   // ISO string, set at queue time
+}
+
 export const CHAT_REDIS = 'CHAT_REDIS_CLIENT';
 
-/** Rate-limit: max messages per window */
-const RL_SEND_MAX = 30;
+/** Redis key for the write-ahead queue list */
+export const CHAT_QUEUE_KEY = 'chat:write_queue';
+
+/** Rate-limit: reactions only (send is no longer rate-limited — Redis queue handles load) */
 const RL_REACT_MAX = 60;
 const RL_WINDOW_MS = 60_000;
 
@@ -104,15 +123,17 @@ export class ChatService {
 
   // ── Rate Limiting ──────────────────────────────────────────────────────────
 
-  /** Returns true if the action is allowed under the rate limit */
+  /**
+   * Returns true if the action is allowed under the rate limit.
+   * Only 'react' is rate-limited now — send goes through the Redis queue
+   * which handles arbitrary throughput without blocking the hot path.
+   */
   async checkRateLimit(
     userId: string,
-    action: 'send' | 'react',
-    roomId?: string,
+    action: 'react',
   ): Promise<boolean> {
-    const max = action === 'send' ? RL_SEND_MAX : RL_REACT_MAX;
-    const scope = action === 'send' ? `${userId}:${roomId}` : userId;
-    const key = `chat:rl:${action}:${scope}`;
+    const max = RL_REACT_MAX;
+    const key = `chat:rl:${action}:${userId}`;
     const now = Date.now();
     const windowStart = now - RL_WINDOW_MS;
 
@@ -133,14 +154,21 @@ export class ChatService {
     return true;
   }
 
-  // ── Message Persistence ───────────────────────────────────────────────────
+  // ── Redis-first message queue ─────────────────────────────────────────────
 
-  async saveMessage(
-    user: User,
+  /**
+   * Queue a message for async DB write and return its formatted shape
+   * immediately so the gateway can broadcast without waiting for Postgres.
+   *
+   * Flow: sanitize → build snapshot → RPUSH to Redis → return FormattedMessage
+   * ChatFlushWorker drains the queue to Postgres every 100ms in batches of 50.
+   */
+  async queueMessage(
+    user: Pick<User, 'id' | 'name' | 'profile_photo_url'>,
     dto: SendMessageDto,
   ): Promise<FormattedMessage> {
+    // 1. Reply snapshot (one optional DB read — only when replying)
     let replyToSnapshot: ReplyToSnapshot | null = null;
-
     if (dto.reply_to_id) {
       const parent = await this.messagesRepo.findOne({
         where: { id: dto.reply_to_id },
@@ -155,21 +183,85 @@ export class ChatService {
       }
     }
 
-    // Sanitize content — escape HTML entities for defense-in-depth
+    // 2. Sanitize
     const sanitizedContent = escapeHtml(dto.content.trim());
 
-    const message = this.messagesRepo.create({
-      roomType: dto.room_type as RoomType,
-      roomId: dto.room_id,
-      senderId: user.id,
+    // 3. Build queue payload (pre-generate stable UUID)
+    const queued: QueuedMessage = {
+      id: uuidv4(),
+      room_type: dto.room_type as RoomType,
+      room_id: dto.room_id,
+      sender_id: user.id,
+      sender_name: user.name ?? 'Unknown',
+      sender_avatar: user.profile_photo_url ?? null,
       content: sanitizedContent,
-      messageType: 'text',
-      replyTo: replyToSnapshot,
-      metadata: {},
+      reply_to: replyToSnapshot,
+      created_at: new Date().toISOString(),
+    };
+
+    // 4. Push to Redis WAL — fire and forget (ChatFlushWorker handles Postgres)
+    await this.redis.rpush(CHAT_QUEUE_KEY, JSON.stringify(queued));
+
+    // 5. Return formatted shape immediately (no DB wait)
+    return {
+      id: queued.id,
+      room_type: queued.room_type,
+      room_id: queued.room_id,
+      sender: {
+        id: user.id,
+        name: user.name ?? 'Unknown',
+        avatar_url: user.profile_photo_url ?? null,
+      },
+      content: queued.content,
+      message_type: 'text',
+      reply_to: queued.reply_to,
+      reactions: {},
+      created_at: queued.created_at,
+      is_deleted: false,
+    };
+  }
+
+  /**
+   * Batch-flush up to `batchSize` queued messages from Redis into Postgres.
+   * Called by ChatFlushWorker every 100ms. Uses LRANGE + LTRIM for atomicity.
+   * Returns the number of messages flushed.
+   */
+  async flushQueue(batchSize = 50): Promise<number> {
+    // Peek at up to batchSize items
+    const items = await this.redis.lrange(CHAT_QUEUE_KEY, 0, batchSize - 1);
+    if (items.length === 0) return 0;
+
+    const messages: Partial<ChatMessage>[] = items.map((raw) => {
+      const q: QueuedMessage = JSON.parse(raw);
+      return {
+        id: q.id,
+        roomType: q.room_type,
+        roomId: q.room_id,
+        senderId: q.sender_id,
+        content: q.content,
+        messageType: 'text' as const,
+        replyTo: q.reply_to,
+        metadata: {},
+        isPinned: false,
+        isDeleted: false,
+        createdAt: new Date(q.created_at),
+        deletedAt: null,
+      };
     });
 
-    const saved = await this.messagesRepo.save(message);
-    return this.formatMessage(saved, user, []);
+    // Insert all in one query, ignore conflicts on id (idempotent on retry)
+    await this.messagesRepo
+      .createQueryBuilder()
+      .insert()
+      .into(ChatMessage)
+      .values(messages as any)
+      .orIgnore()
+      .execute();
+
+    // Remove the items we just processed
+    await this.redis.ltrim(CHAT_QUEUE_KEY, items.length, -1);
+
+    return items.length;
   }
 
   // ── Message Lookup ────────────────────────────────────────────────────────

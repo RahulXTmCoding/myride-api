@@ -194,9 +194,12 @@ export class ChatGateway
   /**
    * Send a message to a room.
    * SECURITY:
-   *   1. Rate-limited (30 msg / 60s per user per room)
-   *   2. Room membership re-verified on every send (stateless — no trust in socket state)
-   *   3. Broadcasts ONLY to the verified room key
+   *   1. Room membership re-verified on every send (stateless — no trust in socket state)
+   *   2. Message queued to Redis immediately → broadcast to room (< 1ms, no DB wait)
+   *   3. ChatFlushWorker persists to Postgres in batches every 100ms
+   *
+   * No per-user send rate limit — Redis queue absorbs any burst without blocking.
+   * Spam/abuse prevention is handled at the product level (trip creator can remove users).
    */
   @UseGuards(WsJwtGuard)
   @SubscribeMessage('chat:send')
@@ -212,26 +215,16 @@ export class ChatGateway
       return;
     }
 
-    // 1. Rate limit check (cheap Redis op before any DB access)
-    const allowed = await this.chatService.checkRateLimit(userId, 'send', dto.room_id);
-    if (!allowed) {
-      socket.emit('chat:error', {
-        code: 'RATE_LIMITED',
-        message: 'Sending too fast. Please slow down.',
-      });
-      return;
-    }
-
-    // 2. Room access check (Redis-cached, falls back to DB)
+    // 1. Room access check (Redis-cached, falls back to DB)
     const hasAccess = await this.chatService.checkRoomAccess(userId, dto.room_type, dto.room_id);
     if (!hasAccess) {
       socket.emit('chat:error', { code: 'ACCESS_DENIED' });
       return;
     }
 
-    // 3. Persist and broadcast
+    // 2. Queue to Redis and broadcast immediately (no Postgres wait)
     const fullUser = { id: userId, name: user.name, profile_photo_url: user.profile_photo_url } as any;
-    const message = await this.chatService.saveMessage(fullUser, dto);
+    const message = await this.chatService.queueMessage(fullUser, dto);
     const roomKey = `${dto.room_type}:${dto.room_id}`;
 
     this.server.to(roomKey).emit('chat:message', message);
@@ -258,7 +251,7 @@ export class ChatGateway
       return;
     }
 
-    // 1. Rate limit
+    // 1. Rate limit (reactions only — 60/min per user)
     const allowed = await this.chatService.checkRateLimit(userId, 'react');
     if (!allowed) {
       socket.emit('chat:error', { code: 'RATE_LIMITED', message: 'Too many reactions.' });

@@ -6,6 +6,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ChatGateway } from './chat.gateway';
 import { ChatService, CHAT_REDIS } from './chat.service';
 import { ChatController } from './chat.controller';
+import { ChatFlushWorker } from './chat-flush.worker';
 import { WsJwtGuard } from './guards/ws-jwt.guard';
 import { ChatMessage } from './entities/chat-message.entity';
 import { MessageReaction } from './entities/message-reaction.entity';
@@ -31,6 +32,7 @@ import Redis from 'ioredis';
   providers: [
     ChatGateway,
     ChatService,
+    ChatFlushWorker,
     WsJwtGuard,
 
     // Dedicated Redis client for chat (rate limiting, access cache, kick pub/sub)

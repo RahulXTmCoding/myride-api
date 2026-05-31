@@ -45,12 +45,13 @@ function makeChatService(): jest.Mocked<ChatService> {
   return {
     checkRoomAccess: jest.fn(),
     checkRateLimit: jest.fn(),
-    saveMessage: jest.fn(),
+    queueMessage: jest.fn(),
     findMessageById: jest.fn(),
     getHistory: jest.fn(),
     toggleReaction: jest.fn(),
     getReactionsForMessage: jest.fn(),
     invalidateRoomAccessCache: jest.fn(),
+    flushQueue: jest.fn(),
   } as any;
 }
 
@@ -220,22 +221,7 @@ describe('ChatGateway', () => {
   describe('handleSend', () => {
     const dto = { room_type: 'trip' as const, room_id: 'trip-1', content: 'Hello' };
 
-    it('emits RATE_LIMITED when rate limit is exceeded', async () => {
-      chatService.checkRateLimit.mockResolvedValue(false);
-      const socket = makeSocket();
-
-      await gateway.handleSend(socket, dto);
-
-      expect(socket.emit).toHaveBeenCalledWith(
-        'chat:error',
-        expect.objectContaining({ code: 'RATE_LIMITED' }),
-      );
-      expect(chatService.checkRoomAccess).not.toHaveBeenCalled();
-      expect(chatService.saveMessage).not.toHaveBeenCalled();
-    });
-
     it('emits ACCESS_DENIED when user is not a room member', async () => {
-      chatService.checkRateLimit.mockResolvedValue(true);
       chatService.checkRoomAccess.mockResolvedValue(false);
       const socket = makeSocket();
 
@@ -245,18 +231,18 @@ describe('ChatGateway', () => {
         'chat:error',
         expect.objectContaining({ code: 'ACCESS_DENIED' }),
       );
-      expect(chatService.saveMessage).not.toHaveBeenCalled();
+      expect(chatService.queueMessage).not.toHaveBeenCalled();
     });
 
-    it('saves message and broadcasts to room on success', async () => {
-      chatService.checkRateLimit.mockResolvedValue(true);
+    it('queues message and broadcasts to room on success', async () => {
       chatService.checkRoomAccess.mockResolvedValue(true);
       const savedMsg = { id: 'msg-1', room_type: 'trip', room_id: 'trip-1', content: 'Hello' };
-      chatService.saveMessage.mockResolvedValue(savedMsg as any);
+      chatService.queueMessage.mockResolvedValue(savedMsg as any);
       const socket = makeSocket();
 
       await gateway.handleSend(socket, dto);
 
+      expect(chatService.queueMessage).toHaveBeenCalled();
       expect(server.to).toHaveBeenCalledWith('trip:trip-1');
       expect(server.emit).toHaveBeenCalledWith('chat:message', savedMsg);
     });
@@ -273,21 +259,15 @@ describe('ChatGateway', () => {
       );
     });
 
-    it('rate limit is checked before access (cheap-first order)', async () => {
-      const callOrder: string[] = [];
-      chatService.checkRateLimit.mockImplementation(async () => {
-        callOrder.push('rateLimit');
-        return false; // fail early
-      });
-      chatService.checkRoomAccess.mockImplementation(async () => {
-        callOrder.push('roomAccess');
-        return true;
-      });
+    it('does NOT apply a send rate limit (send is unlimited)', async () => {
+      chatService.checkRoomAccess.mockResolvedValue(true);
+      chatService.queueMessage.mockResolvedValue({ id: 'x' } as any);
       const socket = makeSocket();
 
       await gateway.handleSend(socket, dto);
 
-      expect(callOrder).toEqual(['rateLimit']); // roomAccess never called
+      // checkRateLimit should never be called for send
+      expect(chatService.checkRateLimit).not.toHaveBeenCalled();
     });
   });
 

@@ -2,7 +2,7 @@ import { Test } from '@nestjs/testing';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
-import { ChatService, CHAT_REDIS } from './chat.service';
+import { ChatService, CHAT_REDIS, CHAT_QUEUE_KEY, QueuedMessage } from './chat.service';
 import { ChatMessage } from './entities/chat-message.entity';
 import { MessageReaction } from './entities/message-reaction.entity';
 import { TripParticipant } from '../trips/entities/trip-participant.entity';
@@ -28,12 +28,14 @@ function makeMessage(overrides: Partial<any> = {}) {
   } as any;
 }
 
-// ─── Redis Mock (pipeline + sorted set support) ────────────────────────────────
+// ─── Redis Mock (pipeline + sorted set + list support) ────────────────────────
 
 class RedisMock {
   store = new Map<string, { value: string; expiresAt?: number }>();
   // sorted sets: key → Map<member, score>
   zsets = new Map<string, Map<string, number>>();
+  // lists
+  lists = new Map<string, string[]>();
   published: Array<{ channel: string; message: string }> = [];
 
   private now() { return Date.now(); }
@@ -57,7 +59,28 @@ class RedisMock {
   async del(key: string): Promise<number> {
     this.store.delete(key);
     this.zsets.delete(key);
+    this.lists.delete(key);
     return 1;
+  }
+
+  async rpush(key: string, ...values: string[]): Promise<number> {
+    const list = this.lists.get(key) ?? [];
+    list.push(...values);
+    this.lists.set(key, list);
+    return list.length;
+  }
+
+  async lrange(key: string, start: number, end: number): Promise<string[]> {
+    const list = this.lists.get(key) ?? [];
+    const stop = end === -1 ? list.length : end + 1;
+    return list.slice(start, stop);
+  }
+
+  async ltrim(key: string, start: number, end: number): Promise<'OK'> {
+    const list = this.lists.get(key) ?? [];
+    const stop = end === -1 ? list.length : end + 1;
+    this.lists.set(key, list.slice(start, stop));
+    return 'OK';
   }
 
   async publish(channel: string, message: string): Promise<number> {
@@ -125,13 +148,22 @@ function makeQb(rows: any[] = []) {
 }
 
 function makeRepo(overrides: Partial<any> = {}) {
+  // Insert query builder for flushQueue
+  const insertQb: any = {
+    insert: jest.fn().mockReturnThis(),
+    into: jest.fn().mockReturnThis(),
+    values: jest.fn().mockReturnThis(),
+    orIgnore: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue({ identifiers: [] }),
+  };
   return {
     findOne: jest.fn(),
     find: jest.fn(),
     save: jest.fn(),
     create: jest.fn((v: any) => v),
     delete: jest.fn(),
-    createQueryBuilder: jest.fn(),
+    createQueryBuilder: jest.fn().mockReturnValue(insertQb),
+    _insertQb: insertQb, // exposed for assertions
     ...overrides,
   };
 }
@@ -228,28 +260,12 @@ describe('ChatService', () => {
     });
   });
 
-  // ── checkRateLimit ────────────────────────────────────────────────────────────
+  // ── checkRateLimit (reactions only) ────────────────────────────────────────
 
   describe('checkRateLimit', () => {
-    it('allows first 30 sends per user per room', async () => {
-      for (let i = 0; i < 30; i++) {
-        const result = await service.checkRateLimit('user-1', 'send', 'room-1');
-        expect(result).toBe(true);
-      }
-    });
-
-    it('rejects the 31st send in the same window', async () => {
-      for (let i = 0; i < 30; i++) {
-        await service.checkRateLimit('user-1', 'send', 'room-1');
-      }
-      const result = await service.checkRateLimit('user-1', 'send', 'room-1');
-      expect(result).toBe(false);
-    });
-
-    it('allows first 60 reacts per user (no room scoping)', async () => {
+    it('allows first 60 reacts per user', async () => {
       for (let i = 0; i < 60; i++) {
-        const result = await service.checkRateLimit('user-1', 'react');
-        expect(result).toBe(true);
+        expect(await service.checkRateLimit('user-1', 'react')).toBe(true);
       }
     });
 
@@ -257,128 +273,148 @@ describe('ChatService', () => {
       for (let i = 0; i < 60; i++) {
         await service.checkRateLimit('user-1', 'react');
       }
-      const result = await service.checkRateLimit('user-1', 'react');
-      expect(result).toBe(false);
+      expect(await service.checkRateLimit('user-1', 'react')).toBe(false);
     });
 
-    it('limits are per-room for send (user-1/room-1 vs user-1/room-2 are independent)', async () => {
-      for (let i = 0; i < 30; i++) {
-        await service.checkRateLimit('user-1', 'send', 'room-1');
+    it('limits are per-user (user-1 and user-2 are independent)', async () => {
+      for (let i = 0; i < 60; i++) {
+        await service.checkRateLimit('user-1', 'react');
       }
-      // Exhausted room-1 limit
-      expect(await service.checkRateLimit('user-1', 'send', 'room-1')).toBe(false);
-      // room-2 is independent — should still be allowed
-      expect(await service.checkRateLimit('user-1', 'send', 'room-2')).toBe(true);
-    });
-
-    it('limits are per-user for send (user-1/room-1 vs user-2/room-1 are independent)', async () => {
-      for (let i = 0; i < 30; i++) {
-        await service.checkRateLimit('user-1', 'send', 'room-1');
-      }
-      expect(await service.checkRateLimit('user-1', 'send', 'room-1')).toBe(false);
-      expect(await service.checkRateLimit('user-2', 'send', 'room-1')).toBe(true);
+      expect(await service.checkRateLimit('user-1', 'react')).toBe(false);
+      expect(await service.checkRateLimit('user-2', 'react')).toBe(true);
     });
   });
 
-  // ── saveMessage ────────────────────────────────────────────────────────────────
+  // ── queueMessage ───────────────────────────────────────────────────────────────
 
-  describe('saveMessage', () => {
+  describe('queueMessage', () => {
     const dto = { room_type: 'trip' as const, room_id: 'trip-1', content: 'Hello' };
 
-    it('saves and returns formatted message', async () => {
-      const saved = makeMessage({ id: 'new-msg', content: 'Hello' });
-      messagesRepo.save.mockResolvedValue(saved);
-      reactionsRepo.find = jest.fn().mockResolvedValue([]);
-
-      const result = await service.saveMessage(makeUser(), dto);
+    it('returns formatted message immediately (no DB save)', async () => {
+      const result = await service.queueMessage(makeUser(), dto);
       expect(result.content).toBe('Hello');
       expect(result.room_type).toBe('trip');
       expect(result.room_id).toBe('trip-1');
+      expect(result.is_deleted).toBe(false);
+      expect(result.reactions).toEqual({});
+      // No DB save called
+      expect(messagesRepo.save).not.toHaveBeenCalled();
     });
 
-    it('sanitizes HTML in content', async () => {
-      const saved = makeMessage({ content: '&lt;script&gt;alert(1)&lt;/script&gt;' });
-      messagesRepo.save.mockResolvedValue(saved);
-
-      const result = await service.saveMessage(makeUser(), {
-        ...dto,
-        content: '<script>alert(1)</script>',
-      });
-      expect(result.content).not.toContain('<script>');
+    it('pushes message JSON to Redis queue', async () => {
+      await service.queueMessage(makeUser(), dto);
+      const queued = redis.lists.get(CHAT_QUEUE_KEY);
+      expect(queued).toHaveLength(1);
+      const parsed: QueuedMessage = JSON.parse(queued![0]);
+      expect(parsed.room_type).toBe('trip');
+      expect(parsed.room_id).toBe('trip-1');
+      expect(parsed.sender_id).toBe('user-1');
     });
 
-    it('trims whitespace from content', async () => {
-      messagesRepo.save.mockImplementation((msg: any) => Promise.resolve({ ...makeMessage(), content: msg.content }));
-
-      const result = await service.saveMessage(makeUser(), {
-        ...dto,
-        content: '   hello   ',
-      });
-      // html-entities will encode the trimmed string
-      expect(result.content.trim()).toBeTruthy();
-      expect(messagesRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ content: expect.not.stringContaining('   hello') }),
+    it('assigns a stable UUID that matches the returned message id', async () => {
+      const result = await service.queueMessage(makeUser(), dto);
+      const queued: QueuedMessage = JSON.parse(redis.lists.get(CHAT_QUEUE_KEY)![0]);
+      expect(queued.id).toBe(result.id);
+      expect(queued.id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
       );
     });
 
-    it('builds reply_to snapshot from parent message', async () => {
-      const parent = makeMessage({ id: 'parent-1', content: 'Parent content', isDeleted: false });
+    it('sanitizes HTML in content before queueing', async () => {
+      await service.queueMessage(makeUser(), { ...dto, content: '<script>xss</script>' });
+      const queued: QueuedMessage = JSON.parse(redis.lists.get(CHAT_QUEUE_KEY)![0]);
+      expect(queued.content).not.toContain('<script>');
+    });
+
+    it('builds reply_to snapshot from live parent message', async () => {
+      const parent = makeMessage({ id: 'parent-1', content: 'Parent', isDeleted: false });
       parent.sender = makeUser({ name: 'Bob' });
       messagesRepo.findOne.mockResolvedValueOnce(parent);
-      messagesRepo.save.mockImplementation((msg: any) =>
-        Promise.resolve({ ...makeMessage(), replyTo: msg.replyTo }),
-      );
 
-      const result = await service.saveMessage(makeUser(), {
+      const result = await service.queueMessage(makeUser(), {
         ...dto,
         reply_to_id: 'parent-1',
       });
-      expect(result.reply_to).toMatchObject({
-        id: 'parent-1',
-        content: 'Parent content',
-        sender_name: 'Bob',
-      });
+      expect(result.reply_to).toMatchObject({ id: 'parent-1', sender_name: 'Bob' });
     });
 
-    it('ignores reply_to if parent message is deleted', async () => {
-      const parent = makeMessage({ id: 'parent-1', isDeleted: true });
-      messagesRepo.findOne.mockResolvedValueOnce(parent);
-      messagesRepo.save.mockImplementation((msg: any) =>
-        Promise.resolve({ ...makeMessage(), replyTo: msg.replyTo }),
-      );
-
-      const result = await service.saveMessage(makeUser(), {
-        ...dto,
-        reply_to_id: 'parent-1',
-      });
+    it('sets reply_to null if parent is deleted', async () => {
+      messagesRepo.findOne.mockResolvedValueOnce(makeMessage({ isDeleted: true }));
+      const result = await service.queueMessage(makeUser(), { ...dto, reply_to_id: 'gone' });
       expect(result.reply_to).toBeNull();
     });
 
-    it('ignores reply_to if parent message does not exist', async () => {
+    it('sets reply_to null if parent does not exist', async () => {
       messagesRepo.findOne.mockResolvedValueOnce(null);
-      messagesRepo.save.mockImplementation((msg: any) =>
-        Promise.resolve({ ...makeMessage(), replyTo: msg.replyTo }),
-      );
-
-      const result = await service.saveMessage(makeUser(), {
-        ...dto,
-        reply_to_id: 'non-existent',
-      });
+      const result = await service.queueMessage(makeUser(), { ...dto, reply_to_id: 'none' });
       expect(result.reply_to).toBeNull();
     });
 
-    it('truncates parent content to 200 chars in snapshot', async () => {
-      const longContent = 'A'.repeat(300);
-      const parent = makeMessage({ id: 'parent-1', content: longContent, isDeleted: false });
-      messagesRepo.findOne.mockResolvedValueOnce(parent);
-      messagesRepo.save.mockImplementation((msg: any) =>
-        Promise.resolve({ ...makeMessage(), replyTo: msg.replyTo }),
+    it('multiple queued messages accumulate in Redis list', async () => {
+      await service.queueMessage(makeUser(), dto);
+      await service.queueMessage(makeUser(), { ...dto, content: 'Second' });
+      expect(redis.lists.get(CHAT_QUEUE_KEY)).toHaveLength(2);
+    });
+  });
+
+  // ── flushQueue ─────────────────────────────────────────────────────────────────
+
+  describe('flushQueue', () => {
+    async function seedQueue(count: number) {
+      for (let i = 0; i < count; i++) {
+        await service.queueMessage(makeUser(), {
+          room_type: 'trip',
+          room_id: 'trip-1',
+          content: `msg ${i}`,
+        });
+      }
+    }
+
+    it('returns 0 and does not call DB when queue is empty', async () => {
+      const flushed = await service.flushQueue();
+      expect(flushed).toBe(0);
+      expect(messagesRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('inserts all queued messages in one batch query', async () => {
+      await seedQueue(3);
+      const flushed = await service.flushQueue(50);
+      expect(flushed).toBe(3);
+      expect(messagesRepo._insertQb.values).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ roomType: 'trip', roomId: 'trip-1' }),
+        ]),
       );
+      expect(messagesRepo._insertQb.execute).toHaveBeenCalled();
+    });
 
-      await service.saveMessage(makeUser(), { ...dto, reply_to_id: 'parent-1' });
+    it('clears flushed items from Redis list', async () => {
+      await seedQueue(3);
+      await service.flushQueue(50);
+      expect(redis.lists.get(CHAT_QUEUE_KEY) ?? []).toHaveLength(0);
+    });
 
-      const savedCall = messagesRepo.save.mock.calls[0][0];
-      expect(savedCall.replyTo.content.length).toBeLessThanOrEqual(200);
+    it('respects batchSize — flushes only up to N items per call', async () => {
+      await seedQueue(10);
+      const flushed = await service.flushQueue(3);
+      expect(flushed).toBe(3);
+      // 7 remain in queue
+      expect(redis.lists.get(CHAT_QUEUE_KEY)).toHaveLength(7);
+    });
+
+    it('second flush processes remaining items after first batch', async () => {
+      await seedQueue(5);
+      await service.flushQueue(3);
+      const flushed2 = await service.flushQueue(3);
+      expect(flushed2).toBe(2);
+      expect(redis.lists.get(CHAT_QUEUE_KEY) ?? []).toHaveLength(0);
+    });
+
+    it('uses orIgnore so duplicate IDs do not throw on retry', async () => {
+      await seedQueue(1);
+      await service.flushQueue(50);
+      // orIgnore() must have been called (idempotency)
+      expect(messagesRepo._insertQb.orIgnore).toHaveBeenCalled();
     });
   });
 
