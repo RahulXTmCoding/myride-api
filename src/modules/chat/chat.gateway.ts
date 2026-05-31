@@ -17,30 +17,31 @@ import Redis from 'ioredis';
 import { createAdapter } from '@socket.io/redis-adapter';
 
 import { WsJwtGuard } from './guards/ws-jwt.guard';
-import { ChatService } from './chat.service';
+import { ChatService, CHAT_ADAPTER_REDIS } from './chat.service';
+import { ChatFlushWorker } from './chat-flush.worker';
 import { SendMessageDto } from './dto/send-message.dto';
 import { ReactMessageDto } from './dto/react-message.dto';
 import { CHAT_REDIS } from './chat.service';
 
 /**
  * ChatGateway
- * Single unified WebSocket gateway for all chat rooms.
- * Rooms are keyed by (room_type, room_id) — works for trip chat,
- * community chat, and community-trip chat without any code changes.
  *
- * Security model (enforced on every event):
- *   1. JWT validated at connection (handleConnection) — drops unauthenticated sockets
- *   2. JWT re-validated per-event via WsJwtGuard — defense in depth
+ * Security model:
+ *   1. JWT validated at connection → unauthenticated sockets dropped immediately
+ *   2. JWT re-validated per-event via WsJwtGuard (defense-in-depth)
  *   3. Input validated via ValidationPipe on the gateway class
- *   4. Rate limit checked before any business logic
- *   5. Room membership checked before every send/react/type
- *   6. Broadcast only to verified room key — no cross-room leakage
+ *   4. Flood control (10 msg/sec) before access check on send
+ *   5. Room membership checked on every send/react
+ *   6. Typing uses socket room membership (no Redis call) — fix #UX6
+ *   7. Broadcast only to verified room key — no cross-room leakage
+ *
+ * FIX #9: Socket.IO adapter uses CHAT_ADAPTER_REDIS (dedicated connection)
+ * so it never contends with the write-ahead stream or rate-limit operations.
  */
 @WebSocketGateway({
   namespace: '/chat',
   cors: {
     origin: (origin: string, callback: (err: Error | null, allow?: boolean) => void) => {
-      // Allow all origins in development; restrict in production via env
       const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') ?? [];
       const isDev = process.env.NODE_ENV !== 'production';
       if (isDev || !origin || allowedOrigins.includes(origin)) {
@@ -63,30 +64,30 @@ export class ChatGateway
 
   constructor(
     private readonly chatService: ChatService,
+    private readonly flushWorker: ChatFlushWorker,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     @Inject(CHAT_REDIS) private readonly redis: Redis,
+    // FIX #9: dedicated connection for Socket.IO adapter pub/sub
+    @Inject(CHAT_ADAPTER_REDIS) private readonly adapterRedis: Redis,
   ) {}
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   afterInit(server: Server) {
-    // Wire Redis adapter for multi-instance horizontal scaling.
-    // Messages broadcast on any NestJS instance reach all connected sockets.
-    const pubClient = this.redis.duplicate();
-    const subClient = this.redis.duplicate();
+    // FIX #9: use the dedicated adapter Redis, not the general CHAT_REDIS.
+    // Socket.IO adapter requires two clients (pub + sub) in subscribe mode.
+    const pubClient = this.adapterRedis;
+    const subClient = this.adapterRedis.duplicate();
 
-    Promise.all([pubClient.connect?.(), subClient.connect?.()])
-      .catch(() => {
-        // ioredis connections are lazy — this is a no-op for already-connected clients
-      })
-      .finally(() => {
+    Promise.resolve()
+      .then(() => {
         server.adapter(createAdapter(pubClient, subClient));
-        this.logger.log('Redis adapter wired for Socket.IO');
-      });
+        this.logger.log('Redis adapter wired for Socket.IO (dedicated connection)');
+      })
+      .catch((err) => this.logger.error('Failed to wire Redis adapter', err));
 
-    // Subscribe to kick events published by TripService / CommunityService
-    // when a user is removed from a trip or community.
+    // Kick eviction subscription — uses general CHAT_REDIS (separate duplicate)
     const kickSub = this.redis.duplicate();
     kickSub.subscribe('chat:kick', (err) => {
       if (err) this.logger.error('Failed to subscribe to chat:kick', err);
@@ -108,20 +109,13 @@ export class ChatGateway
     this.logger.log('ChatGateway initialized');
   }
 
-  /**
-   * SECURITY: Validate JWT at connection time.
-   * Unauthenticated connections are immediately dropped.
-   */
   async handleConnection(socket: Socket) {
     const token = WsJwtGuard.extractTokenStatic(socket);
-
     if (!token) {
-      this.logger.warn(`[Chat] Rejected unauthenticated connection: ${socket.id}`);
       socket.emit('chat:error', { code: 'UNAUTHENTICATED', message: 'Token required' });
       socket.disconnect(true);
       return;
     }
-
     try {
       const payload = this.jwtService.verify(token, {
         secret: this.configService.get<string>('JWT_SECRET'),
@@ -129,7 +123,6 @@ export class ChatGateway
       socket.data.user = payload;
       this.logger.log(`[Chat] Connected: userId=${payload.sub} socketId=${socket.id}`);
     } catch {
-      this.logger.warn(`[Chat] Rejected invalid token: ${socket.id}`);
       socket.emit('chat:error', { code: 'TOKEN_INVALID', message: 'Invalid or expired token' });
       socket.disconnect(true);
     }
@@ -138,16 +131,10 @@ export class ChatGateway
   async handleDisconnect(socket: Socket) {
     const userId = socket.data?.user?.sub ?? 'unknown';
     this.logger.log(`[Chat] Disconnected: userId=${userId} socketId=${socket.id}`);
-    // Socket.IO automatically removes socket from all rooms on disconnect
   }
 
   // ── Client → Server Events ────────────────────────────────────────────────
 
-  /**
-   * Join a chat room.
-   * SECURITY: Verifies room membership before socket.join().
-   * Without this check, any authenticated user could join any room.
-   */
   @UseGuards(WsJwtGuard)
   @SubscribeMessage('chat:join')
   async handleJoin(
@@ -164,22 +151,20 @@ export class ChatGateway
 
     const hasAccess = await this.chatService.checkRoomAccess(userId, room_type, room_id);
     if (!hasAccess) {
-      socket.emit('chat:error', {
-        code: 'ACCESS_DENIED',
-        message: 'You are not a member of this room',
-      });
+      socket.emit('chat:error', { code: 'ACCESS_DENIED', message: 'You are not a member of this room' });
       return;
     }
 
     const roomKey = `${room_type}:${room_id}`;
     await socket.join(roomKey);
     socket.emit('chat:joined', { room_type, room_id });
+
+    // Register this stream so the flush worker discovers it
+    await this.flushWorker.registerStream(room_type, room_id);
+
     this.logger.log(`[Chat] userId=${userId} joined room=${roomKey}`);
   }
 
-  /**
-   * Leave a room explicitly (e.g. user navigates away from chat screen).
-   */
   @UseGuards(WsJwtGuard)
   @SubscribeMessage('chat:leave')
   async handleLeave(
@@ -192,14 +177,9 @@ export class ChatGateway
   }
 
   /**
-   * Send a message to a room.
-   * SECURITY:
-   *   1. Room membership re-verified on every send (stateless — no trust in socket state)
-   *   2. Message queued to Redis immediately → broadcast to room (< 1ms, no DB wait)
-   *   3. ChatFlushWorker persists to Postgres in batches every 100ms
-   *
-   * No per-user send rate limit — Redis queue absorbs any burst without blocking.
-   * Spam/abuse prevention is handled at the product level (trip creator can remove users).
+   * Send a message.
+   * Order of checks: auth → flood control → access → queue + broadcast.
+   * FIX #4: flood control (10 msg/sec per user) before the access check.
    */
   @UseGuards(WsJwtGuard)
   @SubscribeMessage('chat:send')
@@ -215,28 +195,30 @@ export class ChatGateway
       return;
     }
 
-    // 1. Room access check (Redis-cached, falls back to DB)
+    // FIX #4: flood control — 10 msg/sec per user (cheap INCR before DB)
+    const floodOk = await this.chatService.checkFloodControl(userId);
+    if (!floodOk) {
+      socket.emit('chat:error', { code: 'FLOOD_CONTROL', message: 'Sending too fast.' });
+      return;
+    }
+
+    // Room access (Redis-cached)
     const hasAccess = await this.chatService.checkRoomAccess(userId, dto.room_type, dto.room_id);
     if (!hasAccess) {
       socket.emit('chat:error', { code: 'ACCESS_DENIED' });
       return;
     }
 
-    // 2. Queue to Redis and broadcast immediately (no Postgres wait)
     const fullUser = { id: userId, name: user.name, profile_photo_url: user.profile_photo_url } as any;
     const message = await this.chatService.queueMessage(fullUser, dto);
     const roomKey = `${dto.room_type}:${dto.room_id}`;
-
     this.server.to(roomKey).emit('chat:message', message);
   }
 
   /**
-   * Toggle an emoji reaction on a message.
-   * SECURITY:
-   *   1. Rate-limited (60 reactions / 60s per user)
-   *   2. Message looked up first to get its room
-   *   3. User's membership in THAT room verified — prevents cross-room reactions
-   *   4. Broadcast only to the message's verified room
+   * React to a message.
+   * FIX #7: uses getMessageRoom() cache to avoid per-reaction Postgres SELECT.
+   * FIX #3: toggleReaction is now atomic (INSERT ON CONFLICT DO NOTHING).
    */
   @UseGuards(WsJwtGuard)
   @SubscribeMessage('chat:react')
@@ -245,39 +227,32 @@ export class ChatGateway
     @MessageBody() dto: ReactMessageDto,
   ) {
     const userId: string = socket.data.user?.sub;
-
     if (!userId) {
       socket.emit('chat:error', { code: 'UNAUTHENTICATED' });
       return;
     }
 
-    // 1. Rate limit (reactions only — 60/min per user)
     const allowed = await this.chatService.checkRateLimit(userId, 'react');
     if (!allowed) {
       socket.emit('chat:error', { code: 'RATE_LIMITED', message: 'Too many reactions.' });
       return;
     }
 
-    // 2. Find the message to know which room it belongs to
-    const message = await this.chatService.findMessageById(dto.message_id);
-    if (!message) {
+    // FIX #7: cached room lookup — no Postgres round-trip on every reaction
+    const room = await this.chatService.getMessageRoom(dto.message_id);
+    if (!room) {
       socket.emit('chat:error', { code: 'MESSAGE_NOT_FOUND' });
       return;
     }
 
-    // 3. Verify the user is a member of the room that message belongs to
-    //    This prevents: User A in Trip 1 reacting to a message in Trip 2
-    const hasAccess = await this.chatService.checkRoomAccess(
-      userId,
-      message.roomType,
-      message.roomId,
-    );
+    // Cross-room security: verify membership of the message's room
+    const hasAccess = await this.chatService.checkRoomAccess(userId, room.roomType, room.roomId);
     if (!hasAccess) {
       socket.emit('chat:error', { code: 'ACCESS_DENIED' });
       return;
     }
 
-    // 4. Toggle reaction and broadcast to the correct room
+    // FIX #3: atomic toggle
     const result = await this.chatService.toggleReaction(userId, dto.message_id, dto.emoji);
     const roomKey = `${result.roomType}:${result.roomId}`;
     this.server.to(roomKey).emit('chat:reaction_update', {
@@ -287,9 +262,10 @@ export class ChatGateway
   }
 
   /**
-   * Typing indicator — ephemeral, never persisted.
-   * SECURITY: Room membership verified before broadcasting.
-   * Silently ignored on failure (no error response for typing events).
+   * Typing indicator.
+   * FIX UX#6: checks socket room membership instead of calling Redis checkRoomAccess.
+   * The user already passed access check in chat:join — if they're in the
+   * Socket.IO room they're authorised. Eliminates a Redis round-trip per typing event.
    */
   @UseGuards(WsJwtGuard)
   @SubscribeMessage('chat:typing')
@@ -302,16 +278,12 @@ export class ChatGateway
 
     if (!userId || !['trip', 'community'].includes(body.room_type)) return;
 
-    // Verify membership before broadcasting (prevent typing spam into foreign rooms)
-    const hasAccess = await this.chatService.checkRoomAccess(
-      userId,
-      body.room_type,
-      body.room_id,
-    );
-    if (!hasAccess) return; // Silently drop — no error for typing
-
     const roomKey = `${body.room_type}:${body.room_id}`;
-    // Broadcast to everyone in room EXCEPT the sender
+
+    // FIX UX#6: trust socket room membership for ephemeral typing events
+    // instead of paying a Redis round-trip on every keystroke.
+    if (!socket.rooms.has(roomKey)) return;
+
     socket.to(roomKey).emit('chat:typing', {
       user_id: userId,
       name: user.name ?? 'Someone',
@@ -320,20 +292,10 @@ export class ChatGateway
     });
   }
 
-  // ── Internal: Kick / Eviction ─────────────────────────────────────────────
+  // ── Kick / Eviction ───────────────────────────────────────────────────────
 
-  /**
-   * Evict a specific user from a Socket.IO room.
-   * Called when the user is removed from a trip or community.
-   * Published via Redis pub/sub so this works across all server instances.
-   */
-  private async evictUserFromRoom(
-    roomType: string,
-    roomId: string,
-    userId: string,
-  ): Promise<void> {
+  private async evictUserFromRoom(roomType: string, roomId: string, userId: string): Promise<void> {
     const roomKey = `${roomType}:${roomId}`;
-
     try {
       const sockets = await this.server.in(roomKey).fetchSockets();
       for (const sock of sockets) {
@@ -344,9 +306,7 @@ export class ChatGateway
             room_id: roomId,
             reason: 'You have been removed from this group',
           });
-          this.logger.log(
-            `[Chat] Evicted userId=${userId} from room=${roomKey} (kick event)`,
-          );
+          this.logger.log(`[Chat] Evicted userId=${userId} from room=${roomKey}`);
         }
       }
     } catch (e) {

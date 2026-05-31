@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   Inject,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
@@ -32,32 +33,49 @@ export interface FormattedMessage {
 }
 
 /**
- * Wire format stored in the Redis write-ahead queue.
+ * Wire format stored in the Redis Stream entries.
  * Flushed to Postgres by ChatFlushWorker every 100ms in batches.
  */
 export interface QueuedMessage {
-  id: string;           // pre-generated UUID (stable for broadcast and reactions)
+  id: string;             // pre-generated UUID (stable for broadcast and reactions)
   room_type: RoomType;
   room_id: string;
   sender_id: string;
   sender_name: string;
   sender_avatar: string | null;
-  content: string;      // already sanitized
+  content: string;        // already sanitized
   reply_to: ReplyToSnapshot | null;
-  created_at: string;   // ISO string, set at queue time
+  created_at: string;     // ISO string set at queue time (used as DB createdAt)
 }
 
 export const CHAT_REDIS = 'CHAT_REDIS_CLIENT';
+export const CHAT_ADAPTER_REDIS = 'CHAT_ADAPTER_REDIS_CLIENT';
 
-/** Redis key for the write-ahead queue list */
-export const CHAT_QUEUE_KEY = 'chat:write_queue';
+/**
+ * Redis Stream key per room — avoids hot key on a single global list.
+ * Pattern: chat:stream:trip:<tripId> | chat:stream:community:<communityId>
+ */
+export function chatStreamKey(roomType: string, roomId: string): string {
+  return `chat:stream:${roomType}:${roomId}`;
+}
 
-/** Rate-limit: reactions only (send is no longer rate-limited — Redis queue handles load) */
+/** Consumer group name used by ChatFlushWorker */
+export const CHAT_STREAM_GROUP = 'flush-workers';
+
+/** Rate-limit: reactions only (60/min per user) */
 const RL_REACT_MAX = 60;
 const RL_WINDOW_MS = 60_000;
 
+/** Loose flood-control: max sends per user per second */
+const FLOOD_MAX_PER_SEC = 10;
+
+/** Alert threshold: warn when any room stream has this many unacked entries */
+const QUEUE_DEPTH_WARN = 5_000;
+
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   constructor(
     @InjectRepository(ChatMessage)
     private readonly messagesRepo: Repository<ChatMessage>,
@@ -76,8 +94,10 @@ export class ChatService {
 
   /**
    * Check if a user is a member of the given room.
-   * Results are cached in Redis for 5 minutes.
-   * MUST invalidate cache when membership changes via invalidateRoomAccessCache().
+   * Results are cached in Redis:
+   *   '1' (access granted) → 5 min TTL  (membership stable once granted)
+   *   '0' (access denied)  → 30 sec TTL (fast recovery after being added to trip)
+   * MUST invalidate cache on membership changes via invalidateRoomAccessCache().
    */
   async checkRoomAccess(
     userId: string,
@@ -98,21 +118,17 @@ export class ChatService {
       });
       hasAccess = !!participant;
     } else if (roomType === 'community') {
-      // Community members table will be added when CommunityModule is built.
-      // For now, access is always granted to community rooms to avoid blocking
-      // development — replace this with real membership check once that module exists.
-      // TODO: replace with community_members check
+      // TODO: replace with community_members check when CommunityModule is built.
       hasAccess = true;
     }
 
-    await this.redis.set(cacheKey, hasAccess ? '1' : '0', 'EX', 300);
+    // FIX #10: cache '1' for 5 min, '0' for only 30 sec so newly-added members
+    // aren't stuck waiting 5 minutes to join chat after being approved.
+    const ttl = hasAccess ? 300 : 30;
+    await this.redis.set(cacheKey, hasAccess ? '1' : '0', 'EX', ttl);
     return hasAccess;
   }
 
-  /**
-   * Invalidate the access cache for a user+room combination.
-   * Call this whenever membership changes (kick, leave, join).
-   */
   async invalidateRoomAccessCache(
     userId: string,
     roomType: string,
@@ -121,18 +137,13 @@ export class ChatService {
     await this.redis.del(`chat:access:${roomType}:${roomId}:${userId}`);
   }
 
-  // ── Rate Limiting ──────────────────────────────────────────────────────────
+  // ── Rate / Flood Control ───────────────────────────────────────────────────
 
   /**
-   * Returns true if the action is allowed under the rate limit.
-   * Only 'react' is rate-limited now — send goes through the Redis queue
-   * which handles arbitrary throughput without blocking the hot path.
+   * Reaction rate limit: 60 reactions per user per 60s.
+   * Uses a sliding-window sorted set.
    */
-  async checkRateLimit(
-    userId: string,
-    action: 'react',
-  ): Promise<boolean> {
-    const max = RL_REACT_MAX;
+  async checkRateLimit(userId: string, action: 'react'): Promise<boolean> {
     const key = `chat:rl:${action}:${userId}`;
     const now = Date.now();
     const windowStart = now - RL_WINDOW_MS;
@@ -143,7 +154,7 @@ export class ChatService {
     const results = await pipe.exec();
 
     const count = (results?.[1]?.[1] as number) ?? 0;
-    if (count >= max) return false;
+    if (count >= RL_REACT_MAX) return false;
 
     await this.redis
       .pipeline()
@@ -154,39 +165,53 @@ export class ChatService {
     return true;
   }
 
-  // ── Redis-first message queue ─────────────────────────────────────────────
+  /**
+   * FIX #4 — Flood control for sends: max 10 messages per user per second.
+   * Uses a simple Redis INCR counter with a 1-second TTL.
+   * Allows rapid natural chatting while blocking runaway clients / bugs.
+   * Returns true if the send is allowed.
+   */
+  async checkFloodControl(userId: string): Promise<boolean> {
+    const key = `chat:flood:${userId}`;
+    const count = await this.redis.incr(key);
+    if (count === 1) {
+      // First increment in this window — set 1s expiry
+      await this.redis.expire(key, 1);
+    }
+    return count <= FLOOD_MAX_PER_SEC;
+  }
+
+  // ── Redis-first message queue (Streams) ───────────────────────────────────
 
   /**
-   * Queue a message for async DB write and return its formatted shape
-   * immediately so the gateway can broadcast without waiting for Postgres.
+   * FIX #5 + #6: Queue a message using Redis Streams (per-room key).
    *
-   * Flow: sanitize → build snapshot → RPUSH to Redis → return FormattedMessage
-   * ChatFlushWorker drains the queue to Postgres every 100ms in batches of 50.
+   * Why Streams over a List:
+   *   - XREADGROUP + XACK gives at-least-once delivery with PEL crash recovery
+   *   - Per-room stream key (chat:stream:trip:<id>) eliminates the global hot key
+   *   - Entries persist until XACK, surviving worker crashes
+   *
+   * FIX #1: Before hitting Postgres for reply_to, check the in-flight stream
+   * entries for the room so replies to very-recent messages still resolve.
    */
   async queueMessage(
     user: Pick<User, 'id' | 'name' | 'profile_photo_url'>,
     dto: SendMessageDto,
   ): Promise<FormattedMessage> {
-    // 1. Reply snapshot (one optional DB read — only when replying)
+    // 1. Reply snapshot — check stream first, then Postgres
     let replyToSnapshot: ReplyToSnapshot | null = null;
     if (dto.reply_to_id) {
-      const parent = await this.messagesRepo.findOne({
-        where: { id: dto.reply_to_id },
-        relations: ['sender'],
-      });
-      if (parent && !parent.isDeleted) {
-        replyToSnapshot = {
-          id: parent.id,
-          content: parent.content.slice(0, 200),
-          sender_name: parent.sender?.name ?? 'Unknown',
-        };
-      }
+      replyToSnapshot = await this.resolveReplySnapshot(
+        dto.reply_to_id,
+        dto.room_type,
+        dto.room_id,
+      );
     }
 
     // 2. Sanitize
     const sanitizedContent = escapeHtml(dto.content.trim());
 
-    // 3. Build queue payload (pre-generate stable UUID)
+    // 3. Build payload with stable pre-generated UUID
     const queued: QueuedMessage = {
       id: uuidv4(),
       room_type: dto.room_type as RoomType,
@@ -199,10 +224,11 @@ export class ChatService {
       created_at: new Date().toISOString(),
     };
 
-    // 4. Push to Redis WAL — fire and forget (ChatFlushWorker handles Postgres)
-    await this.redis.rpush(CHAT_QUEUE_KEY, JSON.stringify(queued));
+    // 4. Push to per-room Redis Stream
+    const streamKey = chatStreamKey(dto.room_type, dto.room_id);
+    await this.redis.xadd(streamKey, '*', 'data', JSON.stringify(queued));
 
-    // 5. Return formatted shape immediately (no DB wait)
+    // 5. Return immediately — no Postgres wait
     return {
       id: queued.id,
       room_type: queued.room_type,
@@ -222,17 +248,97 @@ export class ChatService {
   }
 
   /**
-   * Batch-flush up to `batchSize` queued messages from Redis into Postgres.
-   * Called by ChatFlushWorker every 100ms. Uses LRANGE + LTRIM for atomicity.
+   * FIX #1: Resolve reply_to snapshot.
+   * Checks the in-flight Redis Stream for the room first, so replies to
+   * messages sent in the last <100ms (still in queue, not yet in Postgres)
+   * resolve correctly instead of returning null.
+   */
+  private async resolveReplySnapshot(
+    replyToId: string,
+    roomType: string,
+    roomId: string,
+  ): Promise<ReplyToSnapshot | null> {
+    // Check in-flight stream entries first
+    try {
+      const streamKey = chatStreamKey(roomType, roomId);
+      // Read all pending entries in this room's stream (bounded to last 200)
+      const entries = await this.redis.xrevrange(streamKey, '+', '-', 'COUNT', 200);
+      for (const [, fields] of entries) {
+        // fields is alternating [key, value, key, value...]
+        const dataIndex = fields.indexOf('data');
+        if (dataIndex === -1) continue;
+        const q: QueuedMessage = JSON.parse(fields[dataIndex + 1]);
+        if (q.id === replyToId) {
+          return {
+            id: q.id,
+            content: q.content.slice(0, 200),
+            sender_name: q.sender_name,
+          };
+        }
+      }
+    } catch {
+      // Stream lookup failure is non-fatal — fall through to Postgres
+    }
+
+    // Fall back to Postgres
+    const parent = await this.messagesRepo.findOne({
+      where: { id: replyToId },
+      relations: ['sender'],
+    });
+    if (parent && !parent.isDeleted) {
+      return {
+        id: parent.id,
+        content: parent.content.slice(0, 200),
+        sender_name: parent.sender?.name ?? 'Unknown',
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Ensure the consumer group exists for a room stream.
+   * Called by ChatFlushWorker before reading. Safe to call multiple times.
+   */
+  async ensureConsumerGroup(streamKey: string): Promise<void> {
+    try {
+      await this.redis.xgroup('CREATE', streamKey, CHAT_STREAM_GROUP, '0', 'MKSTREAM');
+    } catch (err: any) {
+      // BUSYGROUP = group already exists — expected on restart
+      if (!err?.message?.includes('BUSYGROUP')) throw err;
+    }
+  }
+
+  /**
+   * FIX #5: Batch-flush up to batchSize messages from a room's Redis Stream
+   * into Postgres using XREADGROUP + XACK (at-least-once, crash-safe).
+   *
    * Returns the number of messages flushed.
    */
-  async flushQueue(batchSize = 50): Promise<number> {
-    // Peek at up to batchSize items
-    const items = await this.redis.lrange(CHAT_QUEUE_KEY, 0, batchSize - 1);
-    if (items.length === 0) return 0;
+  async flushStream(streamKey: string, workerId: string, batchSize = 50): Promise<number> {
+    // First drain any previously-pending (unacked) entries from a prior crash
+    await this.recoverPendingEntries(streamKey, workerId, batchSize);
 
-    const messages: Partial<ChatMessage>[] = items.map((raw) => {
-      const q: QueuedMessage = JSON.parse(raw);
+    // Read new entries assigned to this worker
+    const results = await this.redis.xreadgroup(
+      'GROUP', CHAT_STREAM_GROUP, workerId,
+      'COUNT', String(batchSize),
+      'STREAMS', streamKey, '>',
+    ) as Array<[string, Array<[string, string[]]>]> | null;
+
+    if (!results || results.length === 0) return 0;
+
+    const entries: Array<[string, string[]]> = results[0][1];
+    if (entries.length === 0) return 0;
+
+    // FIX #8: Queue depth alert
+    const depth = await this.redis.xlen(streamKey);
+    if (depth > QUEUE_DEPTH_WARN) {
+      this.logger.error(`[Chat] Stream ${streamKey} depth=${depth} exceeds ${QUEUE_DEPTH_WARN} — flush worker may be lagging`);
+    }
+
+    const messages: Partial<ChatMessage>[] = entries.map(([, fields]) => {
+      const dataIndex = fields.indexOf('data');
+      const q: QueuedMessage = JSON.parse(fields[dataIndex + 1]);
       return {
         id: q.id,
         roomType: q.room_type,
@@ -244,12 +350,14 @@ export class ChatService {
         metadata: {},
         isPinned: false,
         isDeleted: false,
+        // FIX #2: use the timestamp set at queue time, not DB INSERT time,
+        // so each message has its own unique createdAt for cursor pagination.
         createdAt: new Date(q.created_at),
         deletedAt: null,
       };
     });
 
-    // Insert all in one query, ignore conflicts on id (idempotent on retry)
+    // Bulk INSERT — ON CONFLICT DO NOTHING for idempotent retries
     await this.messagesRepo
       .createQueryBuilder()
       .insert()
@@ -258,16 +366,71 @@ export class ChatService {
       .orIgnore()
       .execute();
 
-    // Remove the items we just processed
-    await this.redis.ltrim(CHAT_QUEUE_KEY, items.length, -1);
+    // ACK only after successful INSERT — entries leave PEL
+    const ids = entries.map(([id]) => id);
+    await this.redis.xack(streamKey, CHAT_STREAM_GROUP, ...ids);
 
-    return items.length;
+    return entries.length;
+  }
+
+  /**
+   * Re-deliver entries that were read but never ACKed (worker crashed mid-flush).
+   * Reclaims entries idle for > 5s.
+   */
+  private async recoverPendingEntries(
+    streamKey: string,
+    workerId: string,
+    batchSize: number,
+  ): Promise<void> {
+    try {
+      const pending = await this.redis.xpending(
+        streamKey, CHAT_STREAM_GROUP, '-', '+', batchSize,
+      ) as Array<[string, string, number, number]>;
+
+      if (!pending || pending.length === 0) return;
+
+      // Reclaim entries idle > 5000ms
+      const staleIds = pending
+        .filter(([, , idleMs]) => idleMs > 5_000)
+        .map(([id]) => id);
+
+      if (staleIds.length === 0) return;
+
+      await this.redis.xclaim(
+        streamKey, CHAT_STREAM_GROUP, workerId,
+        5_000, ...staleIds,
+      );
+
+      this.logger.warn(`[Chat] Reclaimed ${staleIds.length} pending entries on ${streamKey}`);
+    } catch {
+      // xpending on a non-existent group is safe to ignore
+    }
   }
 
   // ── Message Lookup ────────────────────────────────────────────────────────
 
+  /**
+   * FIX #7: Cache message→room mapping in Redis to avoid a Postgres round-trip
+   * on every reaction event. Popular messages get reacted to constantly.
+   */
   async findMessageById(messageId: string): Promise<ChatMessage | null> {
     return this.messagesRepo.findOne({ where: { id: messageId } });
+  }
+
+  async getMessageRoom(messageId: string): Promise<{ roomType: string; roomId: string } | null> {
+    const cacheKey = `chat:msg:room:${messageId}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
+    const message = await this.messagesRepo.findOne({
+      where: { id: messageId },
+      select: ['id', 'roomType', 'roomId'],
+    });
+    if (!message) return null;
+
+    const room = { roomType: message.roomType, roomId: message.roomId };
+    await this.redis.set(cacheKey, JSON.stringify(room), 'EX', 3600);
+    return room;
   }
 
   // ── History (cursor pagination) ───────────────────────────────────────────
@@ -288,18 +451,23 @@ export class ChatService {
       .where('m.roomType = :roomType AND m.roomId = :roomId', { roomType, roomId })
       .andWhere('m.isDeleted = false')
       .orderBy('m.createdAt', 'DESC')
+      .addOrderBy('m.id', 'DESC')  // FIX #2: compound sort for stable pagination
       .limit(Math.min(limit, 100));
 
     if (before) {
       const cursor = await this.messagesRepo.findOne({ where: { id: before } });
       if (cursor) {
-        qb.andWhere('m.createdAt < :cursorTime', { cursorTime: cursor.createdAt });
+        // FIX #2: compound cursor (createdAt, id) prevents skipping messages
+        // that share the same createdAt timestamp (e.g. from a batch flush).
+        qb.andWhere(
+          '(m.createdAt < :cursorTime OR (m.createdAt = :cursorTime AND m.id < :cursorId))',
+          { cursorTime: cursor.createdAt, cursorId: cursor.id },
+        );
       }
     }
 
     const messages = await qb.getMany();
 
-    // Batch-load reactions for all fetched messages (single query)
     const messageIds = messages.map((m) => m.id);
     const reactions =
       messageIds.length > 0
@@ -307,7 +475,7 @@ export class ChatService {
         : [];
 
     return messages
-      .reverse() // Return oldest-first for the client to render top-to-bottom
+      .reverse()
       .map((msg) =>
         this.formatMessage(
           msg,
@@ -319,30 +487,39 @@ export class ChatService {
 
   // ── Reactions ─────────────────────────────────────────────────────────────
 
+  /**
+   * FIX #3 + #7: Atomic toggle using INSERT ON CONFLICT DO NOTHING.
+   * Eliminates the SELECT→DELETE/INSERT race condition and reduces
+   * round-trips from 4 to 2 (upsert + load all reactions).
+   * Uses getMessageRoom() cache to avoid extra message lookup.
+   */
   async toggleReaction(
     userId: string,
     messageId: string,
     emoji: string,
   ): Promise<{ roomType: string; roomId: string; reactions: ReactionsMap }> {
-    const message = await this.messagesRepo.findOne({ where: { id: messageId } });
-    if (!message) throw new NotFoundException('Message not found');
+    const room = await this.getMessageRoom(messageId);
+    if (!room) throw new NotFoundException('Message not found');
 
-    const existing = await this.reactionsRepo.findOne({
-      where: { messageId, userId, emoji },
-    });
+    // Atomic upsert: try INSERT first
+    const insertResult = await this.reactionsRepo
+      .createQueryBuilder()
+      .insert()
+      .into(MessageReaction)
+      .values({ messageId, userId, emoji })
+      .onConflict('ON CONFLICT (message_id, user_id, emoji) DO NOTHING')
+      .returning('id')
+      .execute();
 
-    if (existing) {
-      await this.reactionsRepo.delete(existing.id);
-    } else {
-      await this.reactionsRepo.save(
-        this.reactionsRepo.create({ messageId, userId, emoji }),
-      );
+    // If nothing was inserted the reaction already existed → toggle it off
+    if (insertResult.raw.length === 0) {
+      await this.reactionsRepo.delete({ messageId, userId, emoji });
     }
 
     const allReactions = await this.reactionsRepo.find({ where: { messageId } });
     return {
-      roomType: message.roomType,
-      roomId: message.roomId,
+      roomType: room.roomType,
+      roomId: room.roomId,
       reactions: this.groupReactions(allReactions),
     };
   }

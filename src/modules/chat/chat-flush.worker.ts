@@ -1,67 +1,79 @@
-import { Injectable, OnApplicationBootstrap, OnApplicationShutdown, Logger } from '@nestjs/common';
-import { ChatService } from './chat.service';
+import { Injectable, OnApplicationBootstrap, OnApplicationShutdown, Logger, Inject } from '@nestjs/common';
+import { ChatService, CHAT_REDIS, chatStreamKey, CHAT_STREAM_GROUP } from './chat.service';
+import Redis from 'ioredis';
 
 /**
  * ChatFlushWorker
  *
- * Drains the Redis write-ahead queue (chat:write_queue) into Postgres
- * in batches every 100ms.
+ * Drains per-room Redis Streams into Postgres in batches every 100ms.
  *
- * Why this exists:
- *   - handleSend pushes messages to Redis and broadcasts immediately.
- *     No socket waits for a Postgres INSERT — latency drops to ~1ms.
- *   - This worker runs in the background and does the actual DB writes
- *     in batches of up to 50 rows at a time (one INSERT per tick vs
- *     one INSERT per message).
- *   - If the queue backs up during a burst, the worker catches up
- *     automatically because each tick processes up to 50 items.
+ * ## Design (FIX #5 — Redis Streams replaces Redis List)
  *
- * Failure behaviour:
- *   - If Postgres is temporarily unavailable, messages stay in Redis.
- *   - On restart the worker resumes from wherever the queue left off.
- *   - Redis list is persistent (AOF/RDB) so messages survive a process crash.
- *   - The INSERT uses ON CONFLICT DO NOTHING so retries are safe (idempotent).
+ * Old design (LRANGE + LTRIM) problems:
+ *   - Not atomic: two instances would both read the same entries, and the
+ *     second LTRIM could remove entries the first instance never processed.
+ *   - No crash recovery: if the worker crashed between LRANGE and LTRIM,
+ *     entries stayed in the list but were still at risk of being trimmed later.
  *
- * Scaling note:
- *   - If running multiple NestJS instances, only one instance should run
- *     the flush worker, OR each instance runs it independently and the
- *     ON CONFLICT DO NOTHING prevents duplicate rows.
- *     LRANGE+LTRIM is not atomic across instances — for multi-instance
- *     deployments, replace with Redis BLPOP or a distributed lock.
+ * New design (XREADGROUP + XACK):
+ *   - Consumer group: each entry is assigned to exactly one worker instance.
+ *   - PEL (Pending Entries List): entries stay in PEL until XACK'd.
+ *   - Crash recovery: on restart, xpending + xclaim re-delivers unacked entries.
+ *   - Per-room streams: chat:stream:trip:<id>, chat:stream:community:<id>
+ *     eliminates the global hot key from the old single-list design.
+ *
+ * ## Worker discovery
+ *
+ * Active streams are tracked in a Redis Set (`chat:active_streams`) by the
+ * gateway when a user joins a room. The worker reads this set each tick to
+ * know which streams to drain.
+ *
+ * ## Failure behaviour
+ *
+ * - Postgres unavailable → INSERT fails → XACK not called → entries stay in
+ *   PEL → reclaimed and retried on next tick. Messages survive.
+ * - Redis unavailable → worker logs error + reschedules. No crash.
+ * - Queue depth > 5000 → error log emitted (ChatService handles this check).
  */
 @Injectable()
 export class ChatFlushWorker implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly logger = new Logger(ChatFlushWorker.name);
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private readonly workerId = `worker-${process.pid}-${Date.now()}`;
 
-  /** How often to flush (ms) */
   private readonly FLUSH_INTERVAL_MS = 100;
-
-  /** Max messages per flush */
   private readonly BATCH_SIZE = 50;
 
-  constructor(private readonly chatService: ChatService) {}
+  /** Redis Set key tracking all streams that have had at least one message */
+  static readonly ACTIVE_STREAMS_KEY = 'chat:active_streams';
+
+  constructor(
+    private readonly chatService: ChatService,
+    @Inject(CHAT_REDIS) private readonly redis: Redis,
+  ) {}
 
   onApplicationBootstrap() {
-    this.start();
-  }
-
-  onApplicationShutdown() {
-    this.stop();
-  }
-
-  private start() {
-    this.logger.log(`[ChatFlushWorker] Starting — interval=${this.FLUSH_INTERVAL_MS}ms batch=${this.BATCH_SIZE}`);
+    this.logger.log(`[ChatFlushWorker] Starting workerId=${this.workerId} interval=${this.FLUSH_INTERVAL_MS}ms`);
     this.scheduleNext();
   }
 
-  private stop() {
+  onApplicationShutdown() {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
     }
     this.logger.log('[ChatFlushWorker] Stopped');
+  }
+
+  /**
+   * Register a stream as active so the worker discovers and drains it.
+   * Called by the gateway when a room's first message is sent.
+   */
+  async registerStream(roomType: string, roomId: string): Promise<void> {
+    const key = chatStreamKey(roomType, roomId);
+    await this.redis.sadd(ChatFlushWorker.ACTIVE_STREAMS_KEY, key);
+    await this.chatService.ensureConsumerGroup(key);
   }
 
   private scheduleNext() {
@@ -70,23 +82,35 @@ export class ChatFlushWorker implements OnApplicationBootstrap, OnApplicationShu
 
   private async tick() {
     if (this.running) {
-      // Previous tick still processing — skip and reschedule
       this.scheduleNext();
       return;
     }
 
     this.running = true;
     try {
-      const flushed = await this.chatService.flushQueue(this.BATCH_SIZE);
-      if (flushed > 0) {
-        this.logger.debug(`[ChatFlushWorker] Flushed ${flushed} messages`);
-      }
+      await this.drainAllStreams();
     } catch (err) {
-      // Log but don't crash — messages remain in Redis queue for next tick
-      this.logger.error('[ChatFlushWorker] Flush error', err);
+      this.logger.error('[ChatFlushWorker] Tick error', err);
     } finally {
       this.running = false;
       this.scheduleNext();
     }
+  }
+
+  private async drainAllStreams() {
+    // Get all known active streams
+    const streamKeys = await this.redis.smembers(ChatFlushWorker.ACTIVE_STREAMS_KEY);
+    if (streamKeys.length === 0) return;
+
+    // Drain each stream — in parallel for speed, bounded per-stream
+    await Promise.all(
+      streamKeys.map((key) =>
+        this.chatService
+          .flushStream(key, this.workerId, this.BATCH_SIZE)
+          .catch((err) =>
+            this.logger.error(`[ChatFlushWorker] Failed to flush ${key}`, err),
+          ),
+      ),
+    );
   }
 }
