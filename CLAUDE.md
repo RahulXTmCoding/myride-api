@@ -33,6 +33,10 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
   - `WsJwtGuard`: JWT auth at connection handshake + per-event defense-in-depth
   - `MessageReaction` entity with unique (message_id, user_id, emoji) constraint
   - Security: rate limiting (30 msg/60s), access check on every event, post-kick eviction via Redis pub/sub, HTML entity sanitization, emoji whitelist
+- **Chat tests — full coverage** (2026-05-31):
+  - `chat.service.spec.ts` — 37 unit tests: checkRoomAccess (cache hit/miss, community placeholder, trip approved/denied), invalidateRoomAccessCache, checkRateLimit (per-user/room isolation, send 30+1, react 60+1), saveMessage (HTML sanitize, reply snapshot, deleted/missing parent, 200-char truncation), getHistory (access denied, cursor, capped limit, deleted message content), toggleReaction (add, toggle-off, NotFoundException), findMessageById, reaction grouping
+  - `chat.gateway.spec.ts` — 18 unit tests: handleConnection (no token, invalid token, valid), handleJoin (access denied, success, invalid room_type, no userId), handleLeave, handleSend (rate limited, access denied, success broadcast, unauthenticated, cheap-first order), handleReact (rate limited, message not found, cross-room security, success broadcast), handleTyping (silent drop on no access, invalid room_type, broadcast to room)
+  - `test/chat.e2e-spec.ts` — integration tests (infra-skip pattern): WS connect/reject, room join/deny, message send+receive, room isolation, reaction toggle, cross-room reaction denial, REST history auth+access, cursor pagination, rate limiting (31st message)
 
 ### ❌ Not Yet Built (next priorities)
 1. **Trip CRUD** — `src/modules/trips/` only has entities, no controller/service/module
