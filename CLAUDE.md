@@ -4,8 +4,8 @@
 myRide is a group trip coordination app (think Spotify but for road trips).
 Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 
-## Current Status (as of 2026-05-28)
-**Stage: ~25% complete**
+## Current Status (as of 2026-05-31)
+**Stage: ~40% complete**
 
 ### ✅ Done
 - Full authentication system (dev OTP + Firebase production dual-mode)
@@ -18,26 +18,35 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
   - `POST /api/v1/auth/logout`
 - JWT access tokens (15min) + refresh tokens (30 days)
 - Docker Compose: postgres (PostGIS 16), redis 7, livekit, api containers
-- All 11 database entities defined and auto-synced:
+- All 13 database entities defined and auto-synced:
   - users, trips, trip_stops, trip_participants, user_stop_progress
   - trip_shareable_links, link_access_log, dynamic_stop_suggestions
-  - sos_alerts, chat_messages
+  - sos_alerts, chat_messages (updated), message_reactions (new)
 - TypeORM config, Joi validation schema, Firebase service
+- **Chat system — full implementation** (2026-05-31):
+  - `ChatGateway` (`/chat` namespace, Socket.IO + Redis adapter for multi-instance scaling)
+  - Generic room system: `(room_type: trip|community, room_id: uuid)` — pluggable across all use cases
+  - WS events: `chat:join`, `chat:leave`, `chat:send`, `chat:react`, `chat:typing`
+  - Server events: `chat:message`, `chat:reaction_update`, `chat:typing`, `chat:joined`, `chat:kicked`, `chat:error`
+  - `ChatController`: `GET /api/v1/chat/:room_type/:room_id/messages` (cursor pagination)
+  - `ChatService`: saveMessage, getHistory, toggleReaction, checkRoomAccess, checkRateLimit, invalidateRoomAccessCache
+  - `WsJwtGuard`: JWT auth at connection handshake + per-event defense-in-depth
+  - `MessageReaction` entity with unique (message_id, user_id, emoji) constraint
+  - Security: rate limiting (30 msg/60s), access check on every event, post-kick eviction via Redis pub/sub, HTML entity sanitization, emoji whitelist
 
 ### ❌ Not Yet Built (next priorities)
 1. **Trip CRUD** — `src/modules/trips/` only has entities, no controller/service/module
 2. **Users module** — no controller/service (only entity)
-3. **WebSocket gateway** — real-time location, chat, trip updates
+3. **WebSocket gateway for location** — real-time location tracking, trip updates
 4. **Shareable links API** — generate/access/join via token
 5. **LiveKit voice token endpoint** — `/voice-call/token`
-6. **Chat API** — send/receive messages
-7. **SOS API** — trigger/acknowledge emergency alerts
-8. **AppModule registration** — currently only AuthModule is registered
+6. **SOS API** — trigger/acknowledge emergency alerts
+7. **Community module** — communities, members, invites (chat room access for `room_type=community` currently grants access to all authenticated users as placeholder)
 
 ## Architecture
 ```
 src/
-├── app.module.ts          ← Only AuthModule registered so far
+├── app.module.ts          ← AuthModule + ChatModule registered
 ├── app.controller.ts      ← GET / health check
 ├── app.service.ts         ← Health + DB/Redis probes
 ├── config/
@@ -49,10 +58,24 @@ src/
     │   ├── auth.controller.ts
     │   ├── auth.service.ts
     │   ├── firebase.service.ts
+    │   ├── redis.provider.ts
     │   ├── strategies/jwt.strategy.ts
     │   ├── guards/jwt-auth.guard.ts
     │   ├── decorators/current-user.decorator.ts
     │   └── dto/auth.dto.ts
+    ├── chat/              ← ✅ COMPLETE
+    │   ├── chat.module.ts
+    │   ├── chat.gateway.ts        ← Socket.IO gateway (all WS events)
+    │   ├── chat.service.ts        ← DB ops, access control, rate limiting
+    │   ├── chat.controller.ts     ← REST: history + reactions
+    │   ├── guards/ws-jwt.guard.ts
+    │   ├── dto/
+    │   │   ├── send-message.dto.ts
+    │   │   ├── react-message.dto.ts
+    │   │   └── get-history.dto.ts
+    │   └── entities/
+    │       ├── chat-message.entity.ts   (updated: room_type + room_id)
+    │       └── message-reaction.entity.ts (new)
     ├── users/
     │   └── entities/user.entity.ts     ← entity only, no module
     ├── trips/
@@ -64,10 +87,9 @@ src/
     │       ├── link-access-log.entity.ts
     │       ├── dynamic-stop-suggestion.entity.ts
     │       └── user-stop-progress.entity.ts
-    ├── chat/
-    │   └── entities/chat-message.entity.ts  ← entity only
-    └── sos/
-        └── entities/sos-alert.entity.ts     ← entity only
+    ├── sos/
+    │   └── entities/sos-alert.entity.ts     ← entity only
+    └── voice-call/                          ← entity only
 ```
 
 ## Environment Setup (New Machine)
@@ -147,6 +169,10 @@ Endpoints needed:
 - `POST   /api/v1/trips/:id/complete` — complete trip
 - `POST   /api/v1/trips/:id/participants` — invite participant
 - `POST   /api/v1/trips/:id/stops` — add stop
+
+Note: once TripService approves/removes a participant, it must call:
+  `ChatService.invalidateRoomAccessCache(userId, 'trip', tripId)`
+  AND publish to Redis: `redis.publish('chat:kick', JSON.stringify({ room_type: 'trip', room_id: tripId, user_id: userId }))`
 
 ## Standing Instructions for Claude (applies on any machine)
 
