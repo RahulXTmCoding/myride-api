@@ -7,6 +7,7 @@ import { validationSchema } from './config/validation.schema';
 import { getTypeOrmConfig } from './config/typeorm.config';
 import { AuthModule } from './modules/auth/auth.module';
 import { ChatModule } from './modules/chat/chat.module';
+import { TripsModule } from './modules/trips/trips.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { ChatModule } from './modules/chat/chat.module';
     // Feature modules
     AuthModule,
     ChatModule,
+    TripsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
