@@ -34,7 +34,11 @@ import { Trip } from './../src/modules/trips/entities/trip.entity';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function registerUser(app: INestApplication<App>, redis: Redis, phone: string) {
+async function registerUser(
+  app: INestApplication<App>,
+  redis: Redis,
+  phone: string,
+) {
   await request(app.getHttpServer())
     .post('/api/v1/auth/request-otp')
     .send({ phone })
@@ -65,9 +69,16 @@ function connectSocket(port: number, token: string): Promise<ClientSocket> {
   });
 }
 
-function waitForEvent(socket: ClientSocket, event: string, timeoutMs = 3000): Promise<any> {
+function waitForEvent(
+  socket: ClientSocket,
+  event: string,
+  timeoutMs = 3000,
+): Promise<any> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timeout waiting for ${event}`)), timeoutMs);
+    const timer = setTimeout(
+      () => reject(new Error(`Timeout waiting for ${event}`)),
+      timeoutMs,
+    );
     socket.once(event, (data) => {
       clearTimeout(timer);
       resolve(data);
@@ -96,7 +107,9 @@ describe('Chat system (e2e)', () => {
       }).compile();
 
       app = moduleFixture.createNestApplication();
-      app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+      app.useGlobalPipes(
+        new ValidationPipe({ whitelist: true, transform: true }),
+      );
       app.setGlobalPrefix('api/v1');
       await app.init();
 
@@ -128,7 +141,10 @@ describe('Chat system (e2e)', () => {
       );
       // userB is NOT a participant (used to test access denial)
     } catch (err) {
-      console.warn('[e2e/chat] infra unavailable, skipping:', (err as Error).message);
+      console.warn(
+        '[e2e/chat] infra unavailable, skipping:',
+        (err as Error).message,
+      );
       available = false;
     }
   }, 60_000);
@@ -157,7 +173,9 @@ describe('Chat system (e2e)', () => {
       const errorData = await waitForEvent(socket, 'chat:error');
       expect(errorData.code).toBe('UNAUTHENTICATED');
 
-      await new Promise<void>((resolve) => socket.once('disconnect', () => resolve()));
+      await new Promise<void>((resolve) =>
+        socket.once('disconnect', () => resolve()),
+      );
       socket.close();
     }, 10_000);
 
@@ -218,7 +236,10 @@ describe('Chat system (e2e)', () => {
 
       const socket = await connectSocket(port, userB.token);
 
-      socket.emit('chat:join', { room_type: 'community', room_id: 'global-community' });
+      socket.emit('chat:join', {
+        room_type: 'community',
+        room_id: 'global-community',
+      });
       const joined = await waitForEvent(socket, 'chat:joined');
 
       expect(joined.room_type).toBe('community');
@@ -290,7 +311,10 @@ describe('Chat system (e2e)', () => {
       socketA.emit('chat:join', { room_type: 'trip', room_id: tripId });
       await waitForEvent(socketA, 'chat:joined');
 
-      socketB.emit('chat:join', { room_type: 'community', room_id: 'global-community' });
+      socketB.emit('chat:join', {
+        room_type: 'community',
+        room_id: 'global-community',
+      });
       await waitForEvent(socketB, 'chat:joined');
 
       // A sends to trip room
@@ -306,7 +330,9 @@ describe('Chat system (e2e)', () => {
 
       // B should NOT receive A's trip message within 1s
       let bGotMessage = false;
-      socketB.once('chat:message', () => { bGotMessage = true; });
+      socketB.once('chat:message', () => {
+        bGotMessage = true;
+      });
       await new Promise((r) => setTimeout(r, 1000));
       expect(bGotMessage).toBe(false);
 
@@ -379,7 +405,9 @@ describe('Chat system (e2e)', () => {
       socket.emit('chat:react', { message_id: messageId, emoji: '❤️' });
       const errorData = await waitForEvent(socket, 'chat:error');
 
-      expect(['ACCESS_DENIED', 'RATE_LIMITED', 'MESSAGE_NOT_FOUND']).toContain(errorData.code);
+      expect(['ACCESS_DENIED', 'RATE_LIMITED', 'MESSAGE_NOT_FOUND']).toContain(
+        errorData.code,
+      );
       // Specifically should be ACCESS_DENIED for the room check
       if (errorData.code !== 'RATE_LIMITED') {
         expect(errorData.code).toBe('ACCESS_DENIED');

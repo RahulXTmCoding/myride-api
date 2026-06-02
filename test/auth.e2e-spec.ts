@@ -25,12 +25,17 @@ describe('Auth /me onboarding flip (e2e)', () => {
       }).compile();
 
       app = moduleFixture.createNestApplication();
-      app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+      app.useGlobalPipes(
+        new ValidationPipe({ whitelist: true, transform: true }),
+      );
       app.setGlobalPrefix('api/v1');
       await app.init();
       redis = app.get<Redis>(REDIS_CLIENT);
     } catch (err) {
-      console.warn('[e2e] infra unavailable, skipping:', (err as Error).message);
+      console.warn(
+        '[e2e] infra unavailable, skipping:',
+        (err as Error).message,
+      );
       available = false;
     }
   }, 30_000);

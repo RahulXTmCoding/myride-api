@@ -6,10 +6,11 @@ import {
   Min,
   Max,
   ValidateNested,
+  IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-class CompletionLocationDto {
+class SosLocationDto {
   @IsNumber()
   @Min(-90)
   @Max(90)
@@ -21,14 +22,22 @@ class CompletionLocationDto {
   longitude: number;
 }
 
-export class CompleteStopDto {
+export class CreateSosDto {
+  @ValidateNested()
+  @Type(() => SosLocationDto)
+  location: SosLocationDto;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  message?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  notes?: string;
+  address?: string;
 
   @IsOptional()
-  @ValidateNested()
-  @Type(() => CompletionLocationDto)
-  location?: CompletionLocationDto;
+  @IsIn(['breakdown', 'accident', 'medical', 'other'])
+  alert_type?: 'breakdown' | 'accident' | 'medical' | 'other';
 }

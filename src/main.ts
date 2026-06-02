@@ -44,8 +44,9 @@ async function bootstrap() {
 
   console.log(`🚀 myRide API is running on: http://localhost:${port}/api/v1`);
   console.log(`📝 Environment: ${configService.get('NODE_ENV')}`);
-  console.log(`🗄️  Database: ${configService.get('DATABASE_URL')?.split('@')[1]}`);
+  console.log(
+    `🗄️  Database: ${configService.get('DATABASE_URL')?.split('@')[1]}`,
+  );
 }
 
 bootstrap();
-

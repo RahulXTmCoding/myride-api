@@ -14,8 +14,8 @@ export type MessageType = 'text' | 'system';
 
 export interface ReplyToSnapshot {
   id: string;
-  content: string;      // truncated to 200 chars
-  sender_name: string;  // denormalized — no join needed at read time
+  content: string; // truncated to 200 chars
+  sender_name: string; // denormalized — no join needed at read time
 }
 
 /**
@@ -57,7 +57,12 @@ export class ChatMessage {
   @Index()
   senderId: string;
 
-  @Column({ name: 'message_type', type: 'varchar', length: 20, default: 'text' })
+  @Column({
+    name: 'message_type',
+    type: 'varchar',
+    length: 20,
+    default: 'text',
+  })
   messageType: MessageType;
 
   @Column({ type: 'text' })
@@ -83,6 +88,10 @@ export class ChatMessage {
   @CreateDateColumn({ name: 'created_at', type: 'timestamp with time zone' })
   createdAt: Date;
 
-  @Column({ name: 'deleted_at', type: 'timestamp with time zone', nullable: true })
+  @Column({
+    name: 'deleted_at',
+    type: 'timestamp with time zone',
+    nullable: true,
+  })
   deletedAt: Date | null;
 }

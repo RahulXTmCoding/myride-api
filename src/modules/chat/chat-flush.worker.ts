@@ -1,5 +1,16 @@
-import { Injectable, OnApplicationBootstrap, OnApplicationShutdown, Logger, Inject } from '@nestjs/common';
-import { ChatService, CHAT_REDIS, chatStreamKey, CHAT_STREAM_GROUP } from './chat.service';
+import {
+  Injectable,
+  OnApplicationBootstrap,
+  OnApplicationShutdown,
+  Logger,
+  Inject,
+} from '@nestjs/common';
+import {
+  ChatService,
+  CHAT_REDIS,
+  chatStreamKey,
+  CHAT_STREAM_GROUP,
+} from './chat.service';
 import Redis from 'ioredis';
 
 /**
@@ -36,7 +47,9 @@ import Redis from 'ioredis';
  * - Queue depth > 5000 → error log emitted (ChatService handles this check).
  */
 @Injectable()
-export class ChatFlushWorker implements OnApplicationBootstrap, OnApplicationShutdown {
+export class ChatFlushWorker
+  implements OnApplicationBootstrap, OnApplicationShutdown
+{
   private readonly logger = new Logger(ChatFlushWorker.name);
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -54,7 +67,9 @@ export class ChatFlushWorker implements OnApplicationBootstrap, OnApplicationShu
   ) {}
 
   onApplicationBootstrap() {
-    this.logger.log(`[ChatFlushWorker] Starting workerId=${this.workerId} interval=${this.FLUSH_INTERVAL_MS}ms`);
+    this.logger.log(
+      `[ChatFlushWorker] Starting workerId=${this.workerId} interval=${this.FLUSH_INTERVAL_MS}ms`,
+    );
     this.scheduleNext();
   }
 
@@ -99,7 +114,9 @@ export class ChatFlushWorker implements OnApplicationBootstrap, OnApplicationShu
 
   private async drainAllStreams() {
     // Get all known active streams
-    const streamKeys = await this.redis.smembers(ChatFlushWorker.ACTIVE_STREAMS_KEY);
+    const streamKeys = await this.redis.smembers(
+      ChatFlushWorker.ACTIVE_STREAMS_KEY,
+    );
     if (streamKeys.length === 0) return;
 
     // Drain each stream — in parallel for speed, bounded per-stream

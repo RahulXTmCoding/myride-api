@@ -27,7 +27,10 @@ export class WsJwtGuard implements CanActivate {
 
     const token = this.extractToken(socket);
     if (!token) {
-      socket.emit('chat:error', { code: 'UNAUTHENTICATED', message: 'No token provided' });
+      socket.emit('chat:error', {
+        code: 'UNAUTHENTICATED',
+        message: 'No token provided',
+      });
       return false;
     }
 
@@ -38,15 +41,17 @@ export class WsJwtGuard implements CanActivate {
       socket.data.user = payload;
       return true;
     } catch {
-      socket.emit('chat:error', { code: 'TOKEN_INVALID', message: 'Token expired or invalid' });
+      socket.emit('chat:error', {
+        code: 'TOKEN_INVALID',
+        message: 'Token expired or invalid',
+      });
       return false;
     }
   }
 
   static extractTokenStatic(socket: Socket): string | null {
     const raw =
-      socket.handshake.auth?.token ??
-      socket.handshake.headers?.authorization;
+      socket.handshake.auth?.token ?? socket.handshake.headers?.authorization;
     if (!raw) return null;
     return raw.startsWith('Bearer ') ? raw.slice(7) : raw;
   }

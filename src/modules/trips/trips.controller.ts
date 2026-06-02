@@ -25,6 +25,15 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '../users/entities/user.entity';
 
+/**
+ * Note on route ordering: Nest 11 ships Express 5 + path-to-regexp v6, which
+ * no longer supports inline regex on params (`:id(uuid-regex)`). Concrete
+ * literal sibling routes (`/discover`, `/link/:token`) MUST be declared on
+ * separate path roots than the bare `:id` parametric route, otherwise the
+ * router happily matches `:id` against any string and ParseUUIDPipe rejects
+ * the literal with "uuid is expected". So we serve discovery under
+ * `/trips/feed/discover` rather than `/trips/discover`.
+ */
 @Controller('trips')
 @UseGuards(JwtAuthGuard)
 export class TripsController {
@@ -58,11 +67,13 @@ export class TripsController {
   }
 
   /**
-   * Public discovery feed (FR-011..FR-013). Must be declared BEFORE the
-   * `:id` route — otherwise Nest's path matcher treats "discover" as a UUID
-   * candidate and ParseUUIDPipe 400s the request.
+   * Public discovery feed (FR-011..FR-013). Lives under `/trips/feed/discover`
+   * so its first path segment ("feed") is a literal that Express matches
+   * before the `:id` parametric route. The old `/trips/discover` path
+   * collided with `:id` because path-to-regexp v6 no longer supports inline
+   * regex constraints on params.
    */
-  @Get('discover')
+  @Get('feed/discover')
   async discover(@CurrentUser() user: User, @Query() dto: DiscoverTripsDto) {
     const { items, total } = await this.tripsService.discover(user.id, dto);
     return {
@@ -98,7 +109,10 @@ export class TripsController {
   /** Cancel trip (admin only). */
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  async cancel(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+  async cancel(
+    @CurrentUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.tripsService.cancel(id, user.id);
   }
 
@@ -112,7 +126,11 @@ export class TripsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: JoinRequestDto,
   ) {
-    const participant = await this.tripsService.requestJoin(id, user.id, dto.message);
+    const participant = await this.tripsService.requestJoin(
+      id,
+      user.id,
+      dto.message,
+    );
     return { success: true, data: participant };
   }
 
@@ -134,7 +152,11 @@ export class TripsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Param('userId', ParseUUIDPipe) userId: string,
   ) {
-    const participant = await this.tripsService.approveJoin(id, user.id, userId);
+    const participant = await this.tripsService.approveJoin(
+      id,
+      user.id,
+      userId,
+    );
     return { success: true, data: participant };
   }
 
@@ -191,7 +213,12 @@ export class TripsController {
     @Param('stopId', ParseUUIDPipe) stopId: string,
     @Body() dto: CompleteStopDto,
   ) {
-    const progress = await this.stopProgressService.markComplete(id, user.id, stopId, dto);
+    const progress = await this.stopProgressService.markComplete(
+      id,
+      user.id,
+      stopId,
+      dto,
+    );
     return { success: true, data: progress };
   }
 }

@@ -155,7 +155,10 @@ export class TripsService {
     return trip;
   }
 
-  async list(userId: string, dto: ListTripsDto): Promise<{ items: Trip[]; total: number }> {
+  async list(
+    userId: string,
+    dto: ListTripsDto,
+  ): Promise<{ items: Trip[]; total: number }> {
     const limit = Math.min(dto.limit ?? 20, 100);
     const offset = dto.offset ?? 0;
     const scope = dto.scope ?? 'mine';
@@ -188,8 +191,12 @@ export class TripsService {
       );
     }
 
-    if (dto.status) qb.andWhere('trip.status = :status', { status: dto.status });
-    if (dto.visibility) qb.andWhere('trip.visibility = :visibility', { visibility: dto.visibility });
+    if (dto.status)
+      qb.andWhere('trip.status = :status', { status: dto.status });
+    if (dto.visibility)
+      qb.andWhere('trip.visibility = :visibility', {
+        visibility: dto.visibility,
+      });
 
     const [items, total] = await qb.getManyAndCount();
 
@@ -299,8 +306,10 @@ export class TripsService {
         .orderBy('distance_m', 'ASC')
         .addOrderBy('trip.scheduled_start_time', 'ASC');
     } else {
-      qb.orderBy('trip.scheduled_start_time', 'ASC', 'NULLS LAST')
-        .addOrderBy('trip.created_at', 'DESC');
+      qb.orderBy('trip.scheduled_start_time', 'ASC', 'NULLS LAST').addOrderBy(
+        'trip.created_at',
+        'DESC',
+      );
     }
 
     const [items, total] = await qb.getManyAndCount();
@@ -327,7 +336,11 @@ export class TripsService {
     return { items, total };
   }
 
-  async update(tripId: string, userId: string, dto: UpdateTripDto): Promise<Trip> {
+  async update(
+    tripId: string,
+    userId: string,
+    dto: UpdateTripDto,
+  ): Promise<Trip> {
     const trip = await this.tripRepo.findOne({ where: { id: tripId } });
     if (!trip) throw new NotFoundException({ error: 'TRIP_NOT_FOUND' });
     if (trip.creator_id !== userId) {
@@ -337,7 +350,8 @@ export class TripsService {
     // FR-010: only editable up to 6h before departure
     if (
       trip.scheduled_start_time &&
-      trip.scheduled_start_time.getTime() - Date.now() < TripsService.EDIT_WINDOW_MS &&
+      trip.scheduled_start_time.getTime() - Date.now() <
+        TripsService.EDIT_WINDOW_MS &&
       trip.status === 'pending'
     ) {
       throw new BadRequestException({
@@ -425,7 +439,11 @@ export class TripsService {
     const existing = await this.participantRepo.findOne({
       where: { trip_id: tripId, user_id: userId },
     });
-    if (existing && existing.status !== 'rejected' && existing.status !== 'left') {
+    if (
+      existing &&
+      existing.status !== 'rejected' &&
+      existing.status !== 'left'
+    ) {
       throw new ConflictException({
         error: 'ALREADY_REQUESTED',
         status: existing.status,
@@ -448,14 +466,18 @@ export class TripsService {
       payment_status: trip.is_paid ? 'pending' : null,
     } as Partial<TripParticipant>);
     // message is stored ephemerally — entity has no field for it yet, surface in admin list later
-    if (message) this.logger.log(`Join request msg [${tripId}/${userId}]: ${message}`);
+    if (message)
+      this.logger.log(`Join request msg [${tripId}/${userId}]: ${message}`);
     return this.participantRepo.save(participant);
   }
 
   /**
    * Admin lists pending join requests.
    */
-  async listJoinRequests(tripId: string, adminId: string): Promise<TripParticipant[]> {
+  async listJoinRequests(
+    tripId: string,
+    adminId: string,
+  ): Promise<TripParticipant[]> {
     await this.assertAdmin(tripId, adminId);
     return this.participantRepo.find({
       where: { trip_id: tripId, status: 'pending' },
@@ -482,7 +504,8 @@ export class TripsService {
       const participant = await manager.findOne(TripParticipant, {
         where: { trip_id: tripId, user_id: userId },
       });
-      if (!participant) throw new NotFoundException({ error: 'REQUEST_NOT_FOUND' });
+      if (!participant)
+        throw new NotFoundException({ error: 'REQUEST_NOT_FOUND' });
       if (participant.status === 'approved') return participant; // idempotent
       if (participant.status !== 'pending') {
         throw new BadRequestException({
@@ -502,13 +525,17 @@ export class TripsService {
       await manager.save(Trip, trip);
 
       // Outside-tx ops (cache + pub/sub) — these are best-effort.
-      await this.chatService.invalidateRoomAccessCache(userId, 'trip', tripId).catch((e) => {
-        this.logger.warn(`Failed to invalidate chat cache: ${e?.message}`);
-      });
+      await this.chatService
+        .invalidateRoomAccessCache(userId, 'trip', tripId)
+        .catch((e) => {
+          this.logger.warn(`Failed to invalidate chat cache: ${e?.message}`);
+        });
       // Seed stop progress rows so the UI has a complete dataset to render.
-      await this.stopProgressService.ensureRowsExist(tripId, userId).catch((e) => {
-        this.logger.warn(`Failed to seed stop progress: ${e?.message}`);
-      });
+      await this.stopProgressService
+        .ensureRowsExist(tripId, userId)
+        .catch((e) => {
+          this.logger.warn(`Failed to seed stop progress: ${e?.message}`);
+        });
       return participant;
     });
   }
@@ -522,7 +549,8 @@ export class TripsService {
     const participant = await this.participantRepo.findOne({
       where: { trip_id: tripId, user_id: userId },
     });
-    if (!participant) throw new NotFoundException({ error: 'REQUEST_NOT_FOUND' });
+    if (!participant)
+      throw new NotFoundException({ error: 'REQUEST_NOT_FOUND' });
     if (participant.status === 'rejected') return participant;
     if (participant.status !== 'pending') {
       throw new BadRequestException({
@@ -567,11 +595,17 @@ export class TripsService {
       }
 
       // Best-effort chat eviction
-      await this.chatService.invalidateRoomAccessCache(userId, 'trip', tripId).catch(() => {});
+      await this.chatService
+        .invalidateRoomAccessCache(userId, 'trip', tripId)
+        .catch(() => {});
       await this.chatRedis
         .publish(
           'chat:kick',
-          JSON.stringify({ room_type: 'trip', room_id: tripId, user_id: userId }),
+          JSON.stringify({
+            room_type: 'trip',
+            room_id: tripId,
+            user_id: userId,
+          }),
         )
         .catch(() => {});
 
@@ -590,7 +624,10 @@ export class TripsService {
 
   // ---- helpers ----
 
-  private async loadFullTrip(tripId: string, repo?: Repository<Trip>): Promise<Trip> {
+  private async loadFullTrip(
+    tripId: string,
+    repo?: Repository<Trip>,
+  ): Promise<Trip> {
     const r = repo ?? this.tripRepo;
     const trip = await r.findOne({
       where: { id: tripId },
@@ -609,7 +646,8 @@ export class TripsService {
       order: { created_at: 'ASC' },
       relations: ['user'],
     });
-    (trip as Trip & { participants: TripParticipant[] }).participants = participants;
+    (trip as Trip & { participants: TripParticipant[] }).participants =
+      participants;
 
     return trip;
   }

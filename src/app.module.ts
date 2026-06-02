@@ -8,6 +8,9 @@ import { getTypeOrmConfig } from './config/typeorm.config';
 import { AuthModule } from './modules/auth/auth.module';
 import { ChatModule } from './modules/chat/chat.module';
 import { TripsModule } from './modules/trips/trips.module';
+import { SosModule } from './modules/sos/sos.module';
+import { ShareLinksModule } from './modules/share-links/share-links.module';
+import { VoiceCallModule } from './modules/voice-call/voice-call.module';
 
 @Module({
   imports: [
@@ -29,6 +32,9 @@ import { TripsModule } from './modules/trips/trips.module';
     AuthModule,
     ChatModule,
     TripsModule,
+    SosModule,
+    ShareLinksModule,
+    VoiceCallModule,
   ],
   controllers: [AppController],
   providers: [AppService],

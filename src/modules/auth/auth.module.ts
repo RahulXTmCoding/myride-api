@@ -27,7 +27,13 @@ import { RedisProvider } from './redis.provider';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, FirebaseService, JwtStrategy, JwtAuthGuard, RedisProvider],
+  providers: [
+    AuthService,
+    FirebaseService,
+    JwtStrategy,
+    JwtAuthGuard,
+    RedisProvider,
+  ],
   exports: [AuthService, FirebaseService, JwtAuthGuard],
 })
 export class AuthModule {}

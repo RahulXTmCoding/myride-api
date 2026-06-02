@@ -57,7 +57,7 @@ export class StopProgressService {
 
     // Bulk upsert — INSERT ... ON CONFLICT DO NOTHING.
     // We pre-shape values to avoid building dynamic SQL.
-    const values = stops.map((s, idx) => ({
+    const values: Array<Partial<UserStopProgress>> = stops.map((s, idx) => ({
       stop_id: s.id,
       user_id: userId,
       status: (idx === 0 ? 'current' : 'pending') as UserStopProgress['status'],
@@ -180,7 +180,9 @@ export class StopProgressService {
     await this.assertMember(tripId, userId);
 
     // Stop must belong to this trip
-    const stop = await this.stopRepo.findOne({ where: { id: stopId, trip_id: tripId } });
+    const stop = await this.stopRepo.findOne({
+      where: { id: stopId, trip_id: tripId },
+    });
     if (!stop) {
       throw new NotFoundException({ error: 'STOP_NOT_FOUND' });
     }

@@ -14,7 +14,12 @@ import { ChatModule } from '../chat/chat.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Trip, TripStop, TripParticipant, UserStopProgress]),
+    TypeOrmModule.forFeature([
+      Trip,
+      TripStop,
+      TripParticipant,
+      UserStopProgress,
+    ]),
     AuthModule, // provides JwtAuthGuard
     ChatModule, // provides ChatService + CHAT_REDIS for membership-change invalidation
   ],

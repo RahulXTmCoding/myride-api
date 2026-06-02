@@ -160,10 +160,7 @@ export class AuthService {
 
     const stored = await this.redis.get(this.otpKey(phone));
     if (!stored) {
-      throw new HttpException(
-        { error: 'OTP_EXPIRED' },
-        HttpStatus.GONE,
-      );
+      throw new HttpException({ error: 'OTP_EXPIRED' }, HttpStatus.GONE);
     }
 
     if (stored !== otp) {
@@ -178,12 +175,7 @@ export class AuthService {
       }
 
       if (attempts >= MAX_OTP_ATTEMPTS) {
-        await this.redis.set(
-          this.lockKey(phone),
-          '1',
-          'EX',
-          LOCKOUT_SECONDS,
-        );
+        await this.redis.set(this.lockKey(phone), '1', 'EX', LOCKOUT_SECONDS);
         await this.redis.del(this.otpKey(phone));
         await this.redis.del(this.attemptsKey(phone));
         const unlockAt = new Date(
@@ -240,10 +232,13 @@ export class AuthService {
       throw new BadRequestException('Firebase is not enabled.');
     }
 
-    const decodedToken = await this.firebaseService.verifyIdToken(firebaseToken);
+    const decodedToken =
+      await this.firebaseService.verifyIdToken(firebaseToken);
     const phone = decodedToken.phone_number;
     if (!phone) {
-      throw new UnauthorizedException('Phone number not found in Firebase token');
+      throw new UnauthorizedException(
+        'Phone number not found in Firebase token',
+      );
     }
 
     let user = await this.userRepository.findOne({ where: { phone } });
@@ -339,9 +334,12 @@ export class AuthService {
     if (updates.vehicle !== undefined) {
       const prefs = (user.preferences ?? {}) as Record<string, unknown>;
       prefs.vehicle = updates.vehicle;
-      user.preferences = prefs as User['preferences'];
+      user.preferences = prefs;
       vehicle = updates.vehicle;
-    } else if (user.preferences && (user.preferences as Record<string, unknown>).vehicle) {
+    } else if (
+      user.preferences &&
+      (user.preferences as Record<string, unknown>).vehicle
+    ) {
       vehicle = (user.preferences as Record<string, unknown>).vehicle;
     }
 

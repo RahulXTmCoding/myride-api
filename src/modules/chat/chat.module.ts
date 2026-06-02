@@ -30,7 +30,7 @@ function makeRedis(name: string): Redis {
       useFactory: (configService: ConfigService) => ({
         secret: configService.get<string>('JWT_SECRET'),
         signOptions: {
-          expiresIn: (configService.get('JWT_ACCESS_EXPIRATION') ?? '15m') as `${number}${'s'|'m'|'h'|'d'}`,
+          expiresIn: configService.get('JWT_ACCESS_EXPIRATION') ?? '15m',
         },
       }),
       inject: [ConfigService],
