@@ -4,8 +4,8 @@
 myRide is a group trip coordination app (think Spotify but for road trips).
 Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 
-## Current Status (as of 2026-05-31)
-**Stage: ~40% complete**
+## Current Status (as of 2026-06-02)
+**Stage: ~55% complete**
 
 ### ✅ Done
 - Full authentication system (dev OTP + Firebase production dual-mode)
@@ -39,13 +39,33 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
   - `test/chat.e2e-spec.ts` — integration tests (infra-skip pattern): WS connect/reject, room join/deny, message send+receive, room isolation, reaction toggle, cross-room reaction denial, REST history auth+access, cursor pagination, rate limiting (31st message)
 
 ### ❌ Not Yet Built (next priorities)
-1. **Trip CRUD** — `src/modules/trips/` only has entities, no controller/service/module
-2. **Users module** — no controller/service (only entity)
-3. **WebSocket gateway for location** — real-time location tracking, trip updates
-4. **Shareable links API** — generate/access/join via token
-5. **LiveKit voice token endpoint** — `/voice-call/token`
-6. **SOS API** — trigger/acknowledge emergency alerts
-7. **Community module** — communities, members, invites (chat room access for `room_type=community` currently grants access to all authenticated users as placeholder)
+1. **Users module** — no controller/service (only entity)
+2. **WebSocket gateway for location** — real-time location tracking, trip updates
+3. **Shareable links API** — generate/access/join via token
+4. **LiveKit voice token endpoint** — `/voice-call/token`
+5. **SOS API** — trigger/acknowledge emergency alerts
+6. **Community module** — communities, members, invites (chat room access for `room_type=community` currently grants access to all authenticated users as placeholder)
+
+### ✅ Done (added 2026-06-02 — Trip CRUD + Discovery + Join Requests + Stop Progress)
+- **Trips module** (`feat/trips-crud`): full CRUD with PostGIS POINT stops, single-tx create with creator-as-admin participant
+  - `POST   /api/v1/trips`               — create trip + stops + admin participant
+  - `GET    /api/v1/trips`               — scope=mine|joined|all, status/visibility filters, batched stops (no N+1)
+  - `GET    /api/v1/trips/discover`      — public feed, filters: latitude/longitude+radius_km (ST_DWithin), from/to dates, pricing, trip_type. Sorted by distance when geo supplied; otherwise by departure
+  - `GET    /api/v1/trips/:id`           — full trip (stops + participants with user), private-access enforced
+  - `PATCH  /api/v1/trips/:id`           — admin only, ≥6h before departure (FR-010)
+  - `DELETE /api/v1/trips/:id`           — admin-only cancel
+- **Join requests / membership** (FR-014..FR-020):
+  - `POST /api/v1/trips/:id/join`                     — submit request (rejects creator, full, non-pending trips; resets rejected/left rows to pending)
+  - `GET  /api/v1/trips/:id/join-requests`            — admin lists pending (with user info)
+  - `POST /api/v1/trips/:id/join-requests/:userId/approve` — tx: flip status + increment current_participants + invalidate chat cache + seed stop-progress rows
+  - `POST /api/v1/trips/:id/join-requests/:userId/reject`
+  - `POST /api/v1/trips/:id/leave`                    — tx: flip status + decrement counter (if approved) + chat cache invalidation + Redis pub/sub `chat:kick`
+- **Stop progress** (FR-047..FR-052) — `StopProgressService`:
+  - `GET  /api/v1/trips/:id/progress`            — current user's per-stop status (pending/current/completed)
+  - `GET  /api/v1/trips/:id/progress/all`        — admin-only aggregate (count per status per stop)
+  - `POST /api/v1/trips/:id/stops/:stopId/complete` — flip current→completed and auto-advance next pending stop (single tx)
+  - Idempotent ON CONFLICT seeding via `ensureRowsExist()`
+- **ChatModule** now exports `CHAT_REDIS` for trips→chat cache/pubsub.
 
 ## Architecture
 ```
@@ -161,22 +181,12 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ```
 
 ## Next Task to Implement
-**Trip CRUD module** — create `src/modules/trips/trips.module.ts`, `trips.controller.ts`, `trips.service.ts` and register in `app.module.ts`.
-
-Endpoints needed:
-- `POST   /api/v1/trips` — create trip
-- `GET    /api/v1/trips` — list my trips
-- `GET    /api/v1/trips/:id` — get trip details
-- `PUT    /api/v1/trips/:id` — update trip
-- `DELETE /api/v1/trips/:id` — delete trip
-- `POST   /api/v1/trips/:id/start` — start trip
-- `POST   /api/v1/trips/:id/complete` — complete trip
-- `POST   /api/v1/trips/:id/participants` — invite participant
-- `POST   /api/v1/trips/:id/stops` — add stop
-
-Note: once TripService approves/removes a participant, it must call:
-  `ChatService.invalidateRoomAccessCache(userId, 'trip', tripId)`
-  AND publish to Redis: `redis.publish('chat:kick', JSON.stringify({ room_type: 'trip', room_id: tripId, user_id: userId }))`
+**Live map / location tracking** — `src/modules/location/` with WebSocket gateway:
+- `WS  /api/v1/location` — connect + join trip room
+- `POST /api/v1/trips/:id/location` — REST fallback for location update
+- `GET  /api/v1/trips/:id/locations` — all participants' current locations
+- Snapshot table writes throttled (10s or 50m delta) — 7-day retention job
+- Membership check must mirror chat's `checkRoomAccess` (cache it)
 
 ## Standing Instructions for Claude (applies on any machine)
 

@@ -4,6 +4,8 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
+  Inject,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
@@ -14,6 +16,10 @@ import { TripParticipant } from './entities/trip-participant.entity';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { UpdateTripDto } from './dto/update-trip.dto';
 import { ListTripsDto } from './dto/list-trips.dto';
+import { DiscoverTripsDto } from './dto/discover-trips.dto';
+import { ChatService, CHAT_REDIS } from '../chat/chat.service';
+import { StopProgressService } from './stop-progress.service';
+import type Redis from 'ioredis';
 
 /**
  * TripsService — Trip CRUD + listing.
@@ -39,6 +45,9 @@ export class TripsService {
     @InjectRepository(TripParticipant)
     private readonly participantRepo: Repository<TripParticipant>,
     private readonly dataSource: DataSource,
+    private readonly chatService: ChatService,
+    @Inject(CHAT_REDIS) private readonly chatRedis: Redis,
+    private readonly stopProgressService: StopProgressService,
   ) {}
 
   async create(creatorId: string, dto: CreateTripDto): Promise<Trip> {
@@ -206,6 +215,118 @@ export class TripsService {
     return { items, total };
   }
 
+  /**
+   * Public discovery feed (FR-011..FR-013).
+   *
+   * Returns public, pending, not-full trips the caller hasn't already created
+   * or joined. Supports optional filters:
+   *   - geo: lat/lon + radius_km → ST_DWithin against start stop (stop_order=1)
+   *   - date: from / to → scheduled_start_time bounds
+   *   - pricing: 'free' | 'paid' | 'all'
+   *   - trip_type: 'one-way' | 'round-trip'
+   *
+   * Sort:
+   *   - if lat/lon supplied → distance ASC then departure ASC
+   *   - otherwise          → departure ASC (NULLS LAST), created_at DESC
+   *
+   * The query joins on `trip_stops` only when geo filtering is active, to keep
+   * non-geo discovery cheap (the planner can use trip indexes alone).
+   */
+  async discover(
+    userId: string,
+    dto: DiscoverTripsDto,
+  ): Promise<{ items: Trip[]; total: number }> {
+    const limit = Math.min(dto.limit ?? 20, 100);
+    const offset = dto.offset ?? 0;
+    const useGeo = dto.latitude !== undefined && dto.longitude !== undefined;
+    const radiusMeters = (dto.radius_km ?? 100) * 1000;
+
+    const qb = this.tripRepo
+      .createQueryBuilder('trip')
+      .leftJoinAndSelect('trip.creator', 'creator')
+      .where('trip.visibility = :v', { v: 'public' })
+      .andWhere('trip.status = :s', { s: 'pending' })
+      .andWhere('trip.current_participants < trip.max_participants')
+      .andWhere('trip.creator_id <> :userId', { userId })
+      .andWhere(
+        `NOT EXISTS (
+          SELECT 1 FROM trip_participants tp
+          WHERE tp.trip_id = trip.id
+            AND tp.user_id = :userId
+            AND tp.status IN ('pending', 'approved')
+        )`,
+        { userId },
+      )
+      .limit(limit)
+      .offset(offset);
+
+    if (dto.trip_type) {
+      qb.andWhere('trip.trip_type = :tt', { tt: dto.trip_type });
+    }
+    if (dto.pricing === 'free') {
+      qb.andWhere('trip.is_paid = false');
+    } else if (dto.pricing === 'paid') {
+      qb.andWhere('trip.is_paid = true');
+    }
+    if (dto.from) {
+      qb.andWhere('trip.scheduled_start_time >= :from', { from: dto.from });
+    }
+    if (dto.to) {
+      qb.andWhere('trip.scheduled_start_time <= :to', { to: dto.to });
+    }
+
+    if (useGeo) {
+      qb.innerJoin(
+        'trip_stops',
+        'start_stop',
+        'start_stop.trip_id = trip.id AND start_stop.stop_order = 1',
+      )
+        .andWhere(
+          `ST_DWithin(
+             start_stop.location,
+             ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography,
+             :radius
+           )`,
+          { lng: dto.longitude, lat: dto.latitude, radius: radiusMeters },
+        )
+        .addSelect(
+          `ST_Distance(
+             start_stop.location,
+             ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography
+           )`,
+          'distance_m',
+        )
+        .orderBy('distance_m', 'ASC')
+        .addOrderBy('trip.scheduled_start_time', 'ASC');
+    } else {
+      qb.orderBy('trip.scheduled_start_time', 'ASC', 'NULLS LAST')
+        .addOrderBy('trip.created_at', 'DESC');
+    }
+
+    const [items, total] = await qb.getManyAndCount();
+
+    // Attach stops in batch (mirrors list())
+    if (items.length > 0) {
+      const stops = await this.stopRepo
+        .createQueryBuilder('stop')
+        .where('stop.trip_id IN (:...ids)', { ids: items.map((t) => t.id) })
+        .orderBy('stop.trip_id')
+        .addOrderBy('stop.stop_order', 'ASC')
+        .getMany();
+      const byTrip = new Map<string, TripStop[]>();
+      for (const s of stops) {
+        const list = byTrip.get(s.trip_id) ?? [];
+        list.push(s);
+        byTrip.set(s.trip_id, list);
+      }
+      for (const t of items) {
+        (t as Trip & { stops: TripStop[] }).stops = byTrip.get(t.id) ?? [];
+      }
+    }
+
+    return { items, total };
+  }
+
   async update(tripId: string, userId: string, dto: UpdateTripDto): Promise<Trip> {
     const trip = await this.tripRepo.findOne({ where: { id: tripId } });
     if (!trip) throw new NotFoundException({ error: 'TRIP_NOT_FOUND' });
@@ -262,6 +383,211 @@ export class TripsService {
     return { success: true };
   }
 
+  // ── Join requests / membership ─────────────────────────────────────────────
+
+  /**
+   * Submit a join request. Creates a `pending` participant row.
+   * Spec: FR-014–020. Edge cases enforced:
+   *  - already a member (any non-rejected status) → 409
+   *  - trip full (current_participants >= max) → 409
+   *  - trip not pending (started/cancelled/completed) → 400
+   *  - creator trying to "join" their own trip → 400
+   *  - private trip: only allowed via shareable link in v1 (rejected here unless invited;
+   *    invite system isn't in this branch yet, so we allow private joins to keep dev unblocked
+   *    but log a warning. Lock down once shareable-link auth lands.)
+   */
+  async requestJoin(
+    tripId: string,
+    userId: string,
+    message?: string,
+  ): Promise<TripParticipant> {
+    const trip = await this.tripRepo.findOne({ where: { id: tripId } });
+    if (!trip) throw new NotFoundException({ error: 'TRIP_NOT_FOUND' });
+    if (trip.creator_id === userId) {
+      throw new BadRequestException({ error: 'CREATOR_CANNOT_REQUEST' });
+    }
+    if (trip.status !== 'pending') {
+      throw new BadRequestException({
+        error: 'TRIP_NOT_JOINABLE',
+        message: `Trip is ${trip.status}`,
+      });
+    }
+    if (trip.current_participants >= trip.max_participants) {
+      throw new ConflictException({ error: 'TRIP_FULL' });
+    }
+    if (trip.visibility === 'private') {
+      this.logger.warn(
+        `Private trip ${tripId} accepting direct join from ${userId} ` +
+          `(shareable-link auth not implemented yet)`,
+      );
+    }
+
+    const existing = await this.participantRepo.findOne({
+      where: { trip_id: tripId, user_id: userId },
+    });
+    if (existing && existing.status !== 'rejected' && existing.status !== 'left') {
+      throw new ConflictException({
+        error: 'ALREADY_REQUESTED',
+        status: existing.status,
+      });
+    }
+
+    if (existing) {
+      // Re-request after rejection / leave: reset row to pending
+      existing.status = 'pending';
+      existing.joined_at = null as unknown as Date;
+      existing.left_at = null as unknown as Date;
+      return this.participantRepo.save(existing);
+    }
+
+    const participant = this.participantRepo.create({
+      trip_id: tripId,
+      user_id: userId,
+      status: 'pending',
+      role: 'member',
+      payment_status: trip.is_paid ? 'pending' : null,
+    } as Partial<TripParticipant>);
+    // message is stored ephemerally — entity has no field for it yet, surface in admin list later
+    if (message) this.logger.log(`Join request msg [${tripId}/${userId}]: ${message}`);
+    return this.participantRepo.save(participant);
+  }
+
+  /**
+   * Admin lists pending join requests.
+   */
+  async listJoinRequests(tripId: string, adminId: string): Promise<TripParticipant[]> {
+    await this.assertAdmin(tripId, adminId);
+    return this.participantRepo.find({
+      where: { trip_id: tripId, status: 'pending' },
+      order: { created_at: 'ASC' },
+      relations: ['user'],
+    });
+  }
+
+  /**
+   * Admin approves a pending request. Increments current_participants, sets joined_at,
+   * and invalidates the chat access cache + publishes nothing (chat re-checks on next event).
+   */
+  async approveJoin(
+    tripId: string,
+    adminId: string,
+    userId: string,
+  ): Promise<TripParticipant> {
+    return this.dataSource.transaction(async (manager) => {
+      const trip = await manager.findOne(Trip, { where: { id: tripId } });
+      if (!trip) throw new NotFoundException({ error: 'TRIP_NOT_FOUND' });
+      if (trip.creator_id !== adminId) {
+        throw new ForbiddenException({ error: 'NOT_TRIP_ADMIN' });
+      }
+      const participant = await manager.findOne(TripParticipant, {
+        where: { trip_id: tripId, user_id: userId },
+      });
+      if (!participant) throw new NotFoundException({ error: 'REQUEST_NOT_FOUND' });
+      if (participant.status === 'approved') return participant; // idempotent
+      if (participant.status !== 'pending') {
+        throw new BadRequestException({
+          error: 'REQUEST_NOT_PENDING',
+          status: participant.status,
+        });
+      }
+      if (trip.current_participants >= trip.max_participants) {
+        throw new ConflictException({ error: 'TRIP_FULL' });
+      }
+
+      participant.status = 'approved';
+      participant.joined_at = new Date();
+      await manager.save(TripParticipant, participant);
+
+      trip.current_participants = trip.current_participants + 1;
+      await manager.save(Trip, trip);
+
+      // Outside-tx ops (cache + pub/sub) — these are best-effort.
+      await this.chatService.invalidateRoomAccessCache(userId, 'trip', tripId).catch((e) => {
+        this.logger.warn(`Failed to invalidate chat cache: ${e?.message}`);
+      });
+      // Seed stop progress rows so the UI has a complete dataset to render.
+      await this.stopProgressService.ensureRowsExist(tripId, userId).catch((e) => {
+        this.logger.warn(`Failed to seed stop progress: ${e?.message}`);
+      });
+      return participant;
+    });
+  }
+
+  async rejectJoin(
+    tripId: string,
+    adminId: string,
+    userId: string,
+  ): Promise<TripParticipant> {
+    await this.assertAdmin(tripId, adminId);
+    const participant = await this.participantRepo.findOne({
+      where: { trip_id: tripId, user_id: userId },
+    });
+    if (!participant) throw new NotFoundException({ error: 'REQUEST_NOT_FOUND' });
+    if (participant.status === 'rejected') return participant;
+    if (participant.status !== 'pending') {
+      throw new BadRequestException({
+        error: 'REQUEST_NOT_PENDING',
+        status: participant.status,
+      });
+    }
+    participant.status = 'rejected';
+    return this.participantRepo.save(participant);
+  }
+
+  /**
+   * Member leaves a trip. Decrements current_participants if they were approved.
+   * Kicks them out of the chat room (chat access cache invalidation + Redis pub/sub
+   * 'chat:kick' so the gateway disconnects any open sockets).
+   */
+  async leaveTrip(tripId: string, userId: string): Promise<{ success: true }> {
+    return this.dataSource.transaction(async (manager) => {
+      const trip = await manager.findOne(Trip, { where: { id: tripId } });
+      if (!trip) throw new NotFoundException({ error: 'TRIP_NOT_FOUND' });
+      if (trip.creator_id === userId) {
+        throw new BadRequestException({
+          error: 'CREATOR_CANNOT_LEAVE',
+          message: 'Cancel the trip instead.',
+        });
+      }
+      const participant = await manager.findOne(TripParticipant, {
+        where: { trip_id: tripId, user_id: userId },
+      });
+      if (!participant || participant.status === 'left') {
+        throw new NotFoundException({ error: 'NOT_A_MEMBER' });
+      }
+
+      const wasApproved = participant.status === 'approved';
+      participant.status = 'left';
+      participant.left_at = new Date();
+      await manager.save(TripParticipant, participant);
+
+      if (wasApproved) {
+        trip.current_participants = Math.max(0, trip.current_participants - 1);
+        await manager.save(Trip, trip);
+      }
+
+      // Best-effort chat eviction
+      await this.chatService.invalidateRoomAccessCache(userId, 'trip', tripId).catch(() => {});
+      await this.chatRedis
+        .publish(
+          'chat:kick',
+          JSON.stringify({ room_type: 'trip', room_id: tripId, user_id: userId }),
+        )
+        .catch(() => {});
+
+      return { success: true as const };
+    });
+  }
+
+  private async assertAdmin(tripId: string, userId: string): Promise<Trip> {
+    const trip = await this.tripRepo.findOne({ where: { id: tripId } });
+    if (!trip) throw new NotFoundException({ error: 'TRIP_NOT_FOUND' });
+    if (trip.creator_id !== userId) {
+      throw new ForbiddenException({ error: 'NOT_TRIP_ADMIN' });
+    }
+    return trip;
+  }
+
   // ---- helpers ----
 
   private async loadFullTrip(tripId: string, repo?: Repository<Trip>): Promise<Trip> {
@@ -281,6 +607,7 @@ export class TripsService {
     const participants = await this.participantRepo.find({
       where: { trip_id: tripId },
       order: { created_at: 'ASC' },
+      relations: ['user'],
     });
     (trip as Trip & { participants: TripParticipant[] }).participants = participants;
 

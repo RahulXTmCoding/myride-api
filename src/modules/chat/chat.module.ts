@@ -67,6 +67,6 @@ function makeRedis(name: string): Redis {
     },
   ],
   controllers: [ChatController],
-  exports: [ChatService],
+  exports: [ChatService, CHAT_REDIS],
 })
 export class ChatModule {}
