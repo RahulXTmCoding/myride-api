@@ -9,7 +9,13 @@ import {
   OnGatewayInit,
   WsException,
 } from '@nestjs/websockets';
-import { UseGuards, UsePipes, ValidationPipe, Logger, Inject } from '@nestjs/common';
+import {
+  UseGuards,
+  UsePipes,
+  ValidationPipe,
+  Logger,
+  Inject,
+} from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -41,7 +47,10 @@ import { CHAT_REDIS } from './chat.service';
 @WebSocketGateway({
   namespace: '/chat',
   cors: {
-    origin: (origin: string, callback: (err: Error | null, allow?: boolean) => void) => {
+    origin: (
+      origin: string,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
       const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') ?? [];
       const isDev = process.env.NODE_ENV !== 'production';
       if (isDev || !origin || allowedOrigins.includes(origin)) {
@@ -83,7 +92,9 @@ export class ChatGateway
     Promise.resolve()
       .then(() => {
         server.adapter(createAdapter(pubClient, subClient));
-        this.logger.log('Redis adapter wired for Socket.IO (dedicated connection)');
+        this.logger.log(
+          'Redis adapter wired for Socket.IO (dedicated connection)',
+        );
       })
       .catch((err) => this.logger.error('Failed to wire Redis adapter', err));
 
@@ -112,7 +123,10 @@ export class ChatGateway
   async handleConnection(socket: Socket) {
     const token = WsJwtGuard.extractTokenStatic(socket);
     if (!token) {
-      socket.emit('chat:error', { code: 'UNAUTHENTICATED', message: 'Token required' });
+      socket.emit('chat:error', {
+        code: 'UNAUTHENTICATED',
+        message: 'Token required',
+      });
       socket.disconnect(true);
       return;
     }
@@ -121,16 +135,23 @@ export class ChatGateway
         secret: this.configService.get<string>('JWT_SECRET'),
       });
       socket.data.user = payload;
-      this.logger.log(`[Chat] Connected: userId=${payload.sub} socketId=${socket.id}`);
+      this.logger.log(
+        `[Chat] Connected: userId=${payload.sub} socketId=${socket.id}`,
+      );
     } catch {
-      socket.emit('chat:error', { code: 'TOKEN_INVALID', message: 'Invalid or expired token' });
+      socket.emit('chat:error', {
+        code: 'TOKEN_INVALID',
+        message: 'Invalid or expired token',
+      });
       socket.disconnect(true);
     }
   }
 
   async handleDisconnect(socket: Socket) {
     const userId = socket.data?.user?.sub ?? 'unknown';
-    this.logger.log(`[Chat] Disconnected: userId=${userId} socketId=${socket.id}`);
+    this.logger.log(
+      `[Chat] Disconnected: userId=${userId} socketId=${socket.id}`,
+    );
   }
 
   // ── Client → Server Events ────────────────────────────────────────────────
@@ -149,9 +170,16 @@ export class ChatGateway
       return;
     }
 
-    const hasAccess = await this.chatService.checkRoomAccess(userId, room_type, room_id);
+    const hasAccess = await this.chatService.checkRoomAccess(
+      userId,
+      room_type,
+      room_id,
+    );
     if (!hasAccess) {
-      socket.emit('chat:error', { code: 'ACCESS_DENIED', message: 'You are not a member of this room' });
+      socket.emit('chat:error', {
+        code: 'ACCESS_DENIED',
+        message: 'You are not a member of this room',
+      });
       return;
     }
 
@@ -173,7 +201,10 @@ export class ChatGateway
   ) {
     const roomKey = `${body.room_type}:${body.room_id}`;
     await socket.leave(roomKey);
-    socket.emit('chat:left', { room_type: body.room_type, room_id: body.room_id });
+    socket.emit('chat:left', {
+      room_type: body.room_type,
+      room_id: body.room_id,
+    });
   }
 
   /**
@@ -198,18 +229,29 @@ export class ChatGateway
     // FIX #4: flood control — 10 msg/sec per user (cheap INCR before DB)
     const floodOk = await this.chatService.checkFloodControl(userId);
     if (!floodOk) {
-      socket.emit('chat:error', { code: 'FLOOD_CONTROL', message: 'Sending too fast.' });
+      socket.emit('chat:error', {
+        code: 'FLOOD_CONTROL',
+        message: 'Sending too fast.',
+      });
       return;
     }
 
     // Room access (Redis-cached)
-    const hasAccess = await this.chatService.checkRoomAccess(userId, dto.room_type, dto.room_id);
+    const hasAccess = await this.chatService.checkRoomAccess(
+      userId,
+      dto.room_type,
+      dto.room_id,
+    );
     if (!hasAccess) {
       socket.emit('chat:error', { code: 'ACCESS_DENIED' });
       return;
     }
 
-    const fullUser = { id: userId, name: user.name, profile_photo_url: user.profile_photo_url } as any;
+    const fullUser = {
+      id: userId,
+      name: user.name,
+      profile_photo_url: user.profile_photo_url,
+    } as any;
     const message = await this.chatService.queueMessage(fullUser, dto);
     const roomKey = `${dto.room_type}:${dto.room_id}`;
     this.server.to(roomKey).emit('chat:message', message);
@@ -234,7 +276,10 @@ export class ChatGateway
 
     const allowed = await this.chatService.checkRateLimit(userId, 'react');
     if (!allowed) {
-      socket.emit('chat:error', { code: 'RATE_LIMITED', message: 'Too many reactions.' });
+      socket.emit('chat:error', {
+        code: 'RATE_LIMITED',
+        message: 'Too many reactions.',
+      });
       return;
     }
 
@@ -246,14 +291,22 @@ export class ChatGateway
     }
 
     // Cross-room security: verify membership of the message's room
-    const hasAccess = await this.chatService.checkRoomAccess(userId, room.roomType, room.roomId);
+    const hasAccess = await this.chatService.checkRoomAccess(
+      userId,
+      room.roomType,
+      room.roomId,
+    );
     if (!hasAccess) {
       socket.emit('chat:error', { code: 'ACCESS_DENIED' });
       return;
     }
 
     // FIX #3: atomic toggle
-    const result = await this.chatService.toggleReaction(userId, dto.message_id, dto.emoji);
+    const result = await this.chatService.toggleReaction(
+      userId,
+      dto.message_id,
+      dto.emoji,
+    );
     const roomKey = `${result.roomType}:${result.roomId}`;
     this.server.to(roomKey).emit('chat:reaction_update', {
       message_id: dto.message_id,
@@ -294,7 +347,11 @@ export class ChatGateway
 
   // ── Kick / Eviction ───────────────────────────────────────────────────────
 
-  private async evictUserFromRoom(roomType: string, roomId: string, userId: string): Promise<void> {
+  private async evictUserFromRoom(
+    roomType: string,
+    roomId: string,
+    userId: string,
+  ): Promise<void> {
     const roomKey = `${roomType}:${roomId}`;
     try {
       const sockets = await this.server.in(roomKey).fetchSockets();
@@ -306,11 +363,16 @@ export class ChatGateway
             room_id: roomId,
             reason: 'You have been removed from this group',
           });
-          this.logger.log(`[Chat] Evicted userId=${userId} from room=${roomKey}`);
+          this.logger.log(
+            `[Chat] Evicted userId=${userId} from room=${roomKey}`,
+          );
         }
       }
     } catch (e) {
-      this.logger.error(`[Chat] Failed to evict userId=${userId} from room=${roomKey}`, e);
+      this.logger.error(
+        `[Chat] Failed to evict userId=${userId} from room=${roomKey}`,
+        e,
+      );
     }
   }
 }

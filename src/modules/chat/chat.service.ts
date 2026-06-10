@@ -11,7 +11,11 @@ import Redis from 'ioredis';
 import { encode as escapeHtml } from 'html-entities';
 import { v4 as uuidv4 } from 'uuid';
 
-import { ChatMessage, RoomType, ReplyToSnapshot } from './entities/chat-message.entity';
+import {
+  ChatMessage,
+  RoomType,
+  ReplyToSnapshot,
+} from './entities/chat-message.entity';
 import { MessageReaction } from './entities/message-reaction.entity';
 import { TripParticipant } from '../trips/entities/trip-participant.entity';
 import { User } from '../users/entities/user.entity';
@@ -37,15 +41,15 @@ export interface FormattedMessage {
  * Flushed to Postgres by ChatFlushWorker every 100ms in batches.
  */
 export interface QueuedMessage {
-  id: string;             // pre-generated UUID (stable for broadcast and reactions)
+  id: string; // pre-generated UUID (stable for broadcast and reactions)
   room_type: RoomType;
   room_id: string;
   sender_id: string;
   sender_name: string;
   sender_avatar: string | null;
-  content: string;        // already sanitized
+  content: string; // already sanitized
   reply_to: ReplyToSnapshot | null;
-  created_at: string;     // ISO string set at queue time (used as DB createdAt)
+  created_at: string; // ISO string set at queue time (used as DB createdAt)
 }
 
 export const CHAT_REDIS = 'CHAT_REDIS_CLIENT';
@@ -214,7 +218,7 @@ export class ChatService {
     // 3. Build payload with stable pre-generated UUID
     const queued: QueuedMessage = {
       id: uuidv4(),
-      room_type: dto.room_type as RoomType,
+      room_type: dto.room_type,
       room_id: dto.room_id,
       sender_id: user.id,
       sender_name: user.name ?? 'Unknown',
@@ -262,7 +266,13 @@ export class ChatService {
     try {
       const streamKey = chatStreamKey(roomType, roomId);
       // Read all pending entries in this room's stream (bounded to last 200)
-      const entries = await this.redis.xrevrange(streamKey, '+', '-', 'COUNT', 200);
+      const entries = await this.redis.xrevrange(
+        streamKey,
+        '+',
+        '-',
+        'COUNT',
+        200,
+      );
       for (const [, fields] of entries) {
         // fields is alternating [key, value, key, value...]
         const dataIndex = fields.indexOf('data');
@@ -301,7 +311,13 @@ export class ChatService {
    */
   async ensureConsumerGroup(streamKey: string): Promise<void> {
     try {
-      await this.redis.xgroup('CREATE', streamKey, CHAT_STREAM_GROUP, '0', 'MKSTREAM');
+      await this.redis.xgroup(
+        'CREATE',
+        streamKey,
+        CHAT_STREAM_GROUP,
+        '0',
+        'MKSTREAM',
+      );
     } catch (err: any) {
       // BUSYGROUP = group already exists — expected on restart
       if (!err?.message?.includes('BUSYGROUP')) throw err;
@@ -314,16 +330,25 @@ export class ChatService {
    *
    * Returns the number of messages flushed.
    */
-  async flushStream(streamKey: string, workerId: string, batchSize = 50): Promise<number> {
+  async flushStream(
+    streamKey: string,
+    workerId: string,
+    batchSize = 50,
+  ): Promise<number> {
     // First drain any previously-pending (unacked) entries from a prior crash
     await this.recoverPendingEntries(streamKey, workerId, batchSize);
 
     // Read new entries assigned to this worker
-    const results = await this.redis.xreadgroup(
-      'GROUP', CHAT_STREAM_GROUP, workerId,
-      'COUNT', String(batchSize),
-      'STREAMS', streamKey, '>',
-    ) as Array<[string, Array<[string, string[]]>]> | null;
+    const results = (await this.redis.xreadgroup(
+      'GROUP',
+      CHAT_STREAM_GROUP,
+      workerId,
+      'COUNT',
+      String(batchSize),
+      'STREAMS',
+      streamKey,
+      '>',
+    )) as Array<[string, Array<[string, string[]]>]> | null;
 
     if (!results || results.length === 0) return 0;
 
@@ -333,7 +358,9 @@ export class ChatService {
     // FIX #8: Queue depth alert
     const depth = await this.redis.xlen(streamKey);
     if (depth > QUEUE_DEPTH_WARN) {
-      this.logger.error(`[Chat] Stream ${streamKey} depth=${depth} exceeds ${QUEUE_DEPTH_WARN} — flush worker may be lagging`);
+      this.logger.error(
+        `[Chat] Stream ${streamKey} depth=${depth} exceeds ${QUEUE_DEPTH_WARN} — flush worker may be lagging`,
+      );
     }
 
     const messages: Partial<ChatMessage>[] = entries.map(([, fields]) => {
@@ -383,9 +410,13 @@ export class ChatService {
     batchSize: number,
   ): Promise<void> {
     try {
-      const pending = await this.redis.xpending(
-        streamKey, CHAT_STREAM_GROUP, '-', '+', batchSize,
-      ) as Array<[string, string, number, number]>;
+      const pending = (await this.redis.xpending(
+        streamKey,
+        CHAT_STREAM_GROUP,
+        '-',
+        '+',
+        batchSize,
+      )) as Array<[string, string, number, number]>;
 
       if (!pending || pending.length === 0) return;
 
@@ -397,11 +428,16 @@ export class ChatService {
       if (staleIds.length === 0) return;
 
       await this.redis.xclaim(
-        streamKey, CHAT_STREAM_GROUP, workerId,
-        5_000, ...staleIds,
+        streamKey,
+        CHAT_STREAM_GROUP,
+        workerId,
+        5_000,
+        ...staleIds,
       );
 
-      this.logger.warn(`[Chat] Reclaimed ${staleIds.length} pending entries on ${streamKey}`);
+      this.logger.warn(
+        `[Chat] Reclaimed ${staleIds.length} pending entries on ${streamKey}`,
+      );
     } catch {
       // xpending on a non-existent group is safe to ignore
     }
@@ -417,7 +453,9 @@ export class ChatService {
     return this.messagesRepo.findOne({ where: { id: messageId } });
   }
 
-  async getMessageRoom(messageId: string): Promise<{ roomType: string; roomId: string } | null> {
+  async getMessageRoom(
+    messageId: string,
+  ): Promise<{ roomType: string; roomId: string } | null> {
     const cacheKey = `chat:msg:room:${messageId}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
@@ -448,10 +486,13 @@ export class ChatService {
     const qb = this.messagesRepo
       .createQueryBuilder('m')
       .leftJoinAndSelect('m.sender', 'sender')
-      .where('m.roomType = :roomType AND m.roomId = :roomId', { roomType, roomId })
+      .where('m.roomType = :roomType AND m.roomId = :roomId', {
+        roomType,
+        roomId,
+      })
       .andWhere('m.isDeleted = false')
       .orderBy('m.createdAt', 'DESC')
-      .addOrderBy('m.id', 'DESC')  // FIX #2: compound sort for stable pagination
+      .addOrderBy('m.id', 'DESC') // FIX #2: compound sort for stable pagination
       .limit(Math.min(limit, 100));
 
     if (before) {
@@ -471,18 +512,18 @@ export class ChatService {
     const messageIds = messages.map((m) => m.id);
     const reactions =
       messageIds.length > 0
-        ? await this.reactionsRepo.find({ where: { messageId: In(messageIds) } })
+        ? await this.reactionsRepo.find({
+            where: { messageId: In(messageIds) },
+          })
         : [];
 
-    return messages
-      .reverse()
-      .map((msg) =>
-        this.formatMessage(
-          msg,
-          msg.sender,
-          reactions.filter((r) => r.messageId === msg.id),
-        ),
-      );
+    return messages.reverse().map((msg) =>
+      this.formatMessage(
+        msg,
+        msg.sender,
+        reactions.filter((r) => r.messageId === msg.id),
+      ),
+    );
   }
 
   // ── Reactions ─────────────────────────────────────────────────────────────
@@ -516,7 +557,9 @@ export class ChatService {
       await this.reactionsRepo.delete({ messageId, userId, emoji });
     }
 
-    const allReactions = await this.reactionsRepo.find({ where: { messageId } });
+    const allReactions = await this.reactionsRepo.find({
+      where: { messageId },
+    });
     return {
       roomType: room.roomType,
       roomId: room.roomId,
@@ -532,14 +575,11 @@ export class ChatService {
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   private groupReactions(reactions: MessageReaction[]): ReactionsMap {
-    return reactions.reduce(
-      (acc, r) => {
-        if (!acc[r.emoji]) acc[r.emoji] = [];
-        acc[r.emoji].push(r.userId);
-        return acc;
-      },
-      {} as ReactionsMap,
-    );
+    return reactions.reduce((acc, r) => {
+      if (!acc[r.emoji]) acc[r.emoji] = [];
+      acc[r.emoji].push(r.userId);
+      return acc;
+    }, {} as ReactionsMap);
   }
 
   private formatMessage(

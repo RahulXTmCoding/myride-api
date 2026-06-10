@@ -16,7 +16,10 @@ function makeSocket(userId = 'user-1', token = 'valid-token'): any {
     data: { user: { sub: userId, name: 'Alice' } },
     handshake: { auth: { token }, query: {} },
     emit: jest.fn(),
-    join: jest.fn().mockImplementation(async function(this: any, room: string) {
+    join: jest.fn().mockImplementation(async function (
+      this: any,
+      room: string,
+    ) {
       this.rooms.add(room);
     }),
     leave: jest.fn().mockResolvedValue(undefined),
@@ -60,7 +63,9 @@ function makeFlushWorker(): jest.Mocked<ChatFlushWorker> {
 }
 
 class RedisMock {
-  async duplicate() { return new RedisMockSub(); }
+  async duplicate() {
+    return new RedisMockSub();
+  }
   on() {}
   pipeline() {
     return {
@@ -68,7 +73,10 @@ class RedisMock {
       zcard: jest.fn().mockReturnThis(),
       zadd: jest.fn().mockReturnThis(),
       expire: jest.fn().mockReturnThis(),
-      exec: jest.fn().mockResolvedValue([[null, 0], [null, 0]]),
+      exec: jest.fn().mockResolvedValue([
+        [null, 0],
+        [null, 0],
+      ]),
     };
   }
 }
@@ -98,7 +106,10 @@ describe('ChatGateway', () => {
         { provide: ChatService, useValue: chatService },
         { provide: ChatFlushWorker, useValue: flushWorker },
         { provide: JwtService, useValue: jwtService },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue('test-secret') } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue('test-secret') },
+        },
         { provide: CHAT_REDIS, useValue: new RedisMock() },
         { provide: CHAT_ADAPTER_REDIS, useValue: new RedisMock() },
       ],
@@ -119,15 +130,23 @@ describe('ChatGateway', () => {
       const socket = makeSocket();
       socket.handshake = { auth: {}, query: {} };
       await gateway.handleConnection(socket);
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'UNAUTHENTICATED' }));
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'UNAUTHENTICATED' }),
+      );
       expect(socket.disconnect).toHaveBeenCalledWith(true);
     });
 
     it('disconnects with invalid token', async () => {
-      jwtService.verify.mockImplementation(() => { throw new Error('expired'); });
+      jwtService.verify.mockImplementation(() => {
+        throw new Error('expired');
+      });
       const socket = makeSocket();
       await gateway.handleConnection(socket);
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'TOKEN_INVALID' }));
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'TOKEN_INVALID' }),
+      );
       expect(socket.disconnect).toHaveBeenCalledWith(true);
     });
 
@@ -148,24 +167,42 @@ describe('ChatGateway', () => {
     it('denies join when not a room member', async () => {
       chatService.checkRoomAccess.mockResolvedValue(false);
       const socket = makeSocket();
-      await gateway.handleJoin(socket, { room_type: 'trip', room_id: 'trip-1' });
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'ACCESS_DENIED' }));
+      await gateway.handleJoin(socket, {
+        room_type: 'trip',
+        room_id: 'trip-1',
+      });
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'ACCESS_DENIED' }),
+      );
       expect(socket.join).not.toHaveBeenCalled();
     });
 
     it('joins room and registers stream on success', async () => {
       chatService.checkRoomAccess.mockResolvedValue(true);
       const socket = makeSocket();
-      await gateway.handleJoin(socket, { room_type: 'trip', room_id: 'trip-1' });
+      await gateway.handleJoin(socket, {
+        room_type: 'trip',
+        room_id: 'trip-1',
+      });
       expect(socket.join).toHaveBeenCalledWith('trip:trip-1');
-      expect(socket.emit).toHaveBeenCalledWith('chat:joined', { room_type: 'trip', room_id: 'trip-1' });
+      expect(socket.emit).toHaveBeenCalledWith('chat:joined', {
+        room_type: 'trip',
+        room_id: 'trip-1',
+      });
       expect(flushWorker.registerStream).toHaveBeenCalledWith('trip', 'trip-1');
     });
 
     it('rejects invalid room_type', async () => {
       const socket = makeSocket();
-      await gateway.handleJoin(socket, { room_type: 'invalid', room_id: 'room-1' });
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'INVALID_INPUT' }));
+      await gateway.handleJoin(socket, {
+        room_type: 'invalid',
+        room_id: 'room-1',
+      });
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'INVALID_INPUT' }),
+      );
     });
   });
 
@@ -174,22 +211,35 @@ describe('ChatGateway', () => {
   describe('handleLeave', () => {
     it('leaves room and emits chat:left', async () => {
       const socket = makeSocket();
-      await gateway.handleLeave(socket, { room_type: 'trip', room_id: 'trip-1' });
+      await gateway.handleLeave(socket, {
+        room_type: 'trip',
+        room_id: 'trip-1',
+      });
       expect(socket.leave).toHaveBeenCalledWith('trip:trip-1');
-      expect(socket.emit).toHaveBeenCalledWith('chat:left', { room_type: 'trip', room_id: 'trip-1' });
+      expect(socket.emit).toHaveBeenCalledWith('chat:left', {
+        room_type: 'trip',
+        room_id: 'trip-1',
+      });
     });
   });
 
   // ── handleSend ────────────────────────────────────────────────────────────────
 
   describe('handleSend', () => {
-    const dto = { room_type: 'trip' as const, room_id: 'trip-1', content: 'Hello' };
+    const dto = {
+      room_type: 'trip' as const,
+      room_id: 'trip-1',
+      content: 'Hello',
+    };
 
     it('emits FLOOD_CONTROL when flood limit exceeded (FIX #4)', async () => {
       chatService.checkFloodControl.mockResolvedValue(false);
       const socket = makeSocket();
       await gateway.handleSend(socket, dto);
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'FLOOD_CONTROL' }));
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'FLOOD_CONTROL' }),
+      );
       expect(chatService.checkRoomAccess).not.toHaveBeenCalled();
     });
 
@@ -197,13 +247,21 @@ describe('ChatGateway', () => {
       chatService.checkRoomAccess.mockResolvedValue(false);
       const socket = makeSocket();
       await gateway.handleSend(socket, dto);
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'ACCESS_DENIED' }));
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'ACCESS_DENIED' }),
+      );
       expect(chatService.queueMessage).not.toHaveBeenCalled();
     });
 
     it('queues and broadcasts on success', async () => {
       chatService.checkRoomAccess.mockResolvedValue(true);
-      const msg = { id: 'msg-1', room_type: 'trip', room_id: 'trip-1', content: 'Hello' };
+      const msg = {
+        id: 'msg-1',
+        room_type: 'trip',
+        room_id: 'trip-1',
+        content: 'Hello',
+      };
       chatService.queueMessage.mockResolvedValue(msg as any);
       const socket = makeSocket();
       await gateway.handleSend(socket, dto);
@@ -215,13 +273,22 @@ describe('ChatGateway', () => {
       const socket = makeSocket();
       socket.data = {};
       await gateway.handleSend(socket, dto);
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'UNAUTHENTICATED' }));
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'UNAUTHENTICATED' }),
+      );
     });
 
     it('flood control is checked before access (cheap-first)', async () => {
       const callOrder: string[] = [];
-      chatService.checkFloodControl.mockImplementation(async () => { callOrder.push('flood'); return false; });
-      chatService.checkRoomAccess.mockImplementation(async () => { callOrder.push('access'); return true; });
+      chatService.checkFloodControl.mockImplementation(async () => {
+        callOrder.push('flood');
+        return false;
+      });
+      chatService.checkRoomAccess.mockImplementation(async () => {
+        callOrder.push('access');
+        return true;
+      });
       const socket = makeSocket();
       await gateway.handleSend(socket, dto);
       expect(callOrder).toEqual(['flood']); // access never reached
@@ -245,7 +312,10 @@ describe('ChatGateway', () => {
       chatService.checkRateLimit.mockResolvedValue(false);
       const socket = makeSocket();
       await gateway.handleReact(socket, dto);
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'RATE_LIMITED' }));
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'RATE_LIMITED' }),
+      );
     });
 
     it('emits MESSAGE_NOT_FOUND when message does not exist', async () => {
@@ -253,24 +323,44 @@ describe('ChatGateway', () => {
       chatService.getMessageRoom.mockResolvedValue(null);
       const socket = makeSocket();
       await gateway.handleReact(socket, dto);
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'MESSAGE_NOT_FOUND' }));
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'MESSAGE_NOT_FOUND' }),
+      );
     });
 
-    it('verifies membership of the MESSAGE\'S room (cross-room security)', async () => {
+    it("verifies membership of the MESSAGE'S room (cross-room security)", async () => {
       chatService.checkRateLimit.mockResolvedValue(true);
-      chatService.getMessageRoom.mockResolvedValue({ roomType: 'trip', roomId: 'trip-2' });
+      chatService.getMessageRoom.mockResolvedValue({
+        roomType: 'trip',
+        roomId: 'trip-2',
+      });
       chatService.checkRoomAccess.mockResolvedValue(false);
       const socket = makeSocket();
       await gateway.handleReact(socket, dto);
-      expect(chatService.checkRoomAccess).toHaveBeenCalledWith('user-1', 'trip', 'trip-2');
-      expect(socket.emit).toHaveBeenCalledWith('chat:error', expect.objectContaining({ code: 'ACCESS_DENIED' }));
+      expect(chatService.checkRoomAccess).toHaveBeenCalledWith(
+        'user-1',
+        'trip',
+        'trip-2',
+      );
+      expect(socket.emit).toHaveBeenCalledWith(
+        'chat:error',
+        expect.objectContaining({ code: 'ACCESS_DENIED' }),
+      );
     });
 
     it('uses getMessageRoom cache — no findMessageById call (FIX #7)', async () => {
       chatService.checkRateLimit.mockResolvedValue(true);
-      chatService.getMessageRoom.mockResolvedValue({ roomType: 'trip', roomId: 'trip-1' });
+      chatService.getMessageRoom.mockResolvedValue({
+        roomType: 'trip',
+        roomId: 'trip-1',
+      });
       chatService.checkRoomAccess.mockResolvedValue(true);
-      chatService.toggleReaction.mockResolvedValue({ roomType: 'trip', roomId: 'trip-1', reactions: {} });
+      chatService.toggleReaction.mockResolvedValue({
+        roomType: 'trip',
+        roomId: 'trip-1',
+        reactions: {},
+      });
       const socket = makeSocket();
       await gateway.handleReact(socket, dto);
       expect(chatService.findMessageById).not.toHaveBeenCalled();
@@ -278,13 +368,23 @@ describe('ChatGateway', () => {
 
     it('broadcasts reaction_update to correct room', async () => {
       chatService.checkRateLimit.mockResolvedValue(true);
-      chatService.getMessageRoom.mockResolvedValue({ roomType: 'trip', roomId: 'trip-1' });
+      chatService.getMessageRoom.mockResolvedValue({
+        roomType: 'trip',
+        roomId: 'trip-1',
+      });
       chatService.checkRoomAccess.mockResolvedValue(true);
-      chatService.toggleReaction.mockResolvedValue({ roomType: 'trip', roomId: 'trip-1', reactions: { '👍': ['user-1'] } });
+      chatService.toggleReaction.mockResolvedValue({
+        roomType: 'trip',
+        roomId: 'trip-1',
+        reactions: { '👍': ['user-1'] },
+      });
       const socket = makeSocket();
       await gateway.handleReact(socket, dto);
       expect(server.to).toHaveBeenCalledWith('trip:trip-1');
-      expect(server.emit).toHaveBeenCalledWith('chat:reaction_update', expect.objectContaining({ reactions: { '👍': ['user-1'] } }));
+      expect(server.emit).toHaveBeenCalledWith(
+        'chat:reaction_update',
+        expect.objectContaining({ reactions: { '👍': ['user-1'] } }),
+      );
     });
   });
 
@@ -298,7 +398,10 @@ describe('ChatGateway', () => {
       const toMock = jest.fn().mockReturnValue({ emit: jest.fn() });
       socket.to = toMock;
 
-      await gateway.handleTyping(socket, { room_type: 'trip', room_id: 'trip-1' });
+      await gateway.handleTyping(socket, {
+        room_type: 'trip',
+        room_id: 'trip-1',
+      });
 
       expect(toMock).not.toHaveBeenCalled();
       // CRITICAL: no Redis access check at all for typing
@@ -311,10 +414,16 @@ describe('ChatGateway', () => {
       const emitMock = jest.fn();
       socket.to = jest.fn().mockReturnValue({ emit: emitMock });
 
-      await gateway.handleTyping(socket, { room_type: 'trip', room_id: 'trip-1' });
+      await gateway.handleTyping(socket, {
+        room_type: 'trip',
+        room_id: 'trip-1',
+      });
 
       expect(socket.to).toHaveBeenCalledWith('trip:trip-1');
-      expect(emitMock).toHaveBeenCalledWith('chat:typing', expect.objectContaining({ user_id: 'user-1' }));
+      expect(emitMock).toHaveBeenCalledWith(
+        'chat:typing',
+        expect.objectContaining({ user_id: 'user-1' }),
+      );
       // No Redis call
       expect(chatService.checkRoomAccess).not.toHaveBeenCalled();
     });
@@ -322,7 +431,10 @@ describe('ChatGateway', () => {
     it('silently drops for invalid room_type', async () => {
       const socket = makeSocket();
       socket.to = jest.fn();
-      await gateway.handleTyping(socket, { room_type: 'invalid', room_id: 'room-1' });
+      await gateway.handleTyping(socket, {
+        room_type: 'invalid',
+        room_id: 'room-1',
+      });
       expect(socket.to).not.toHaveBeenCalled();
     });
   });

@@ -8,9 +8,12 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     connectionString: process.env.DATABASE_URL,
   });
 
-  private readonly redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-    maxRetriesPerRequest: 2,
-  });
+  private readonly redis = new Redis(
+    process.env.REDIS_URL ?? 'redis://localhost:6379',
+    {
+      maxRetriesPerRequest: 2,
+    },
+  );
 
   async onModuleInit() {
     await this.pool.query('SELECT 1');
@@ -28,7 +31,8 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     ]);
 
     const database = databaseProbe.status === 'fulfilled';
-    const redis = redisProbe.status === 'fulfilled' && redisProbe.value === 'PONG';
+    const redis =
+      redisProbe.status === 'fulfilled' && redisProbe.value === 'PONG';
 
     return {
       service: 'myride-api',

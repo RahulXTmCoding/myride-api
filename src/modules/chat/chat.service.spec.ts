@@ -16,7 +16,12 @@ import { TripParticipant } from '../trips/entities/trip-participant.entity';
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeUser(overrides: Partial<any> = {}) {
-  return { id: 'user-1', name: 'Alice', profile_photo_url: null, ...overrides } as any;
+  return {
+    id: 'user-1',
+    name: 'Alice',
+    profile_photo_url: null,
+    ...overrides,
+  } as any;
 }
 
 function makeMessage(overrides: Partial<any> = {}) {
@@ -48,12 +53,17 @@ class RedisMock {
   published: Array<{ channel: string; message: string }> = [];
   private seq = 0;
 
-  private now() { return Date.now(); }
-  private nextId() { return `${this.now()}-${++this.seq}`; }
+  private now() {
+    return Date.now();
+  }
+  private nextId() {
+    return `${this.now()}-${++this.seq}`;
+  }
 
   private purge(key: string) {
     const e = this.store.get(key);
-    if (e?.expiresAt !== undefined && e.expiresAt <= this.now()) this.store.delete(key);
+    if (e?.expiresAt !== undefined && e.expiresAt <= this.now())
+      this.store.delete(key);
   }
 
   async get(key: string): Promise<string | null> {
@@ -61,7 +71,12 @@ class RedisMock {
     return this.store.get(key)?.value ?? null;
   }
 
-  async set(key: string, value: string, _mode?: string, ttl?: number): Promise<'OK'> {
+  async set(
+    key: string,
+    value: string,
+    _mode?: string,
+    ttl?: number,
+  ): Promise<'OK'> {
     const expiresAt = ttl ? this.now() + ttl * 1000 : undefined;
     this.store.set(key, { value, expiresAt });
     return 'OK';
@@ -85,7 +100,10 @@ class RedisMock {
 
   async expire(key: string, ttl: number): Promise<number> {
     const e = this.store.get(key);
-    if (e) { e.expiresAt = this.now() + ttl * 1000; return 1; }
+    if (e) {
+      e.expiresAt = this.now() + ttl * 1000;
+      return 1;
+    }
     return 0;
   }
 
@@ -103,13 +121,28 @@ class RedisMock {
     return (this.streams.get(key) ?? []).length;
   }
 
-  async xrevrange(key: string, _end: string, _start: string, _count?: string, n?: number): Promise<Array<[string, string[]]>> {
+  async xrevrange(
+    key: string,
+    _end: string,
+    _start: string,
+    _count?: string,
+    n?: number,
+  ): Promise<Array<[string, string[]]>> {
     const stream = this.streams.get(key) ?? [];
     const limit = n ?? stream.length;
-    return [...stream].reverse().slice(0, limit).map(e => [e.id, e.fields]);
+    return [...stream]
+      .reverse()
+      .slice(0, limit)
+      .map((e) => [e.id, e.fields]);
   }
 
-  async xgroup(cmd: string, key: string, group: string, _from: string, mkstream?: string): Promise<'OK'> {
+  async xgroup(
+    cmd: string,
+    key: string,
+    group: string,
+    _from: string,
+    mkstream?: string,
+  ): Promise<'OK'> {
     if (cmd === 'CREATE') {
       if (mkstream === 'MKSTREAM' && !this.streams.has(key)) {
         this.streams.set(key, []);
@@ -123,9 +156,14 @@ class RedisMock {
   }
 
   async xreadgroup(
-    _GROUP: string, group: string, consumer: string,
-    _COUNT: string, count: string,
-    _STREAMS: string, key: string, _from: string,
+    _GROUP: string,
+    group: string,
+    consumer: string,
+    _COUNT: string,
+    count: string,
+    _STREAMS: string,
+    key: string,
+    _from: string,
   ): Promise<Array<[string, Array<[string, string[]]>]> | null> {
     const stream = this.streams.get(key) ?? [];
     const groupMap = this.groups.get(key)?.get(group);
@@ -140,12 +178,12 @@ class RedisMock {
       for (const id of pending) allPending.add(id);
     }
 
-    const available = stream.filter(e => !allPending.has(e.id));
+    const available = stream.filter((e) => !allPending.has(e.id));
     const batch = available.slice(0, parseInt(count, 10));
     for (const e of batch) consumerPending.add(e.id);
 
     if (batch.length === 0) return null;
-    return [[key, batch.map(e => [e.id, e.fields])]];
+    return [[key, batch.map((e) => [e.id, e.fields])]];
   }
 
   async xack(key: string, group: string, ...ids: string[]): Promise<number> {
@@ -160,7 +198,13 @@ class RedisMock {
     return count;
   }
 
-  async xpending(key: string, group: string, _start: string, _end: string, count: number): Promise<Array<[string, string, number, number]>> {
+  async xpending(
+    key: string,
+    group: string,
+    _start: string,
+    _end: string,
+    count: number,
+  ): Promise<Array<[string, string, number, number]>> {
     const groupMap = this.groups.get(key)?.get(group);
     if (!groupMap) return [];
     const result: Array<[string, string, number, number]> = [];
@@ -173,7 +217,13 @@ class RedisMock {
     return result;
   }
 
-  async xclaim(_key: string, _group: string, _consumer: string, _minIdle: number, ..._ids: string[]): Promise<any[]> {
+  async xclaim(
+    _key: string,
+    _group: string,
+    _consumer: string,
+    _minIdle: number,
+    ..._ids: string[]
+  ): Promise<any[]> {
     return [];
   }
 
@@ -182,7 +232,12 @@ class RedisMock {
   async sadd(key: string, ...members: string[]): Promise<number> {
     const s = this.sets.get(key) ?? new Set<string>();
     let added = 0;
-    for (const m of members) { if (!s.has(m)) { s.add(m); added++; } }
+    for (const m of members) {
+      if (!s.has(m)) {
+        s.add(m);
+        added++;
+      }
+    }
     this.sets.set(key, s);
     return added;
   }
@@ -198,7 +253,9 @@ class RedisMock {
     return 1;
   }
 
-  async duplicate(): Promise<RedisMock> { return this; }
+  async duplicate(): Promise<RedisMock> {
+    return this;
+  }
 
   pipeline() {
     const ops: Array<() => Promise<any>> = [];
@@ -225,7 +282,10 @@ class RedisMock {
         });
         return pipe;
       },
-      expire: () => { ops.push(async () => 1); return pipe; },
+      expire: () => {
+        ops.push(async () => 1);
+        return pipe;
+      },
       exec: async () => {
         const results: Array<[null, any]> = [];
         for (const op of ops) results.push([null, await op()]);
@@ -301,8 +361,14 @@ describe('ChatService', () => {
       providers: [
         ChatService,
         { provide: getRepositoryToken(ChatMessage), useValue: messagesRepo },
-        { provide: getRepositoryToken(MessageReaction), useValue: reactionsRepo },
-        { provide: getRepositoryToken(TripParticipant), useValue: participantsRepo },
+        {
+          provide: getRepositoryToken(MessageReaction),
+          useValue: reactionsRepo,
+        },
+        {
+          provide: getRepositoryToken(TripParticipant),
+          useValue: participantsRepo,
+        },
         { provide: CHAT_REDIS, useValue: redis },
       ],
     }).compile();
@@ -315,11 +381,15 @@ describe('ChatService', () => {
 
   describe('checkRoomAccess', () => {
     it('returns false for unknown room_type', async () => {
-      expect(await service.checkRoomAccess('user-1', 'unknown', 'room-1')).toBe(false);
+      expect(await service.checkRoomAccess('user-1', 'unknown', 'room-1')).toBe(
+        false,
+      );
     });
 
     it('returns true for community room (placeholder)', async () => {
-      expect(await service.checkRoomAccess('user-1', 'community', 'comm-1')).toBe(true);
+      expect(
+        await service.checkRoomAccess('user-1', 'community', 'comm-1'),
+      ).toBe(true);
     });
 
     it('caches community result for 5 min (300s)', async () => {
@@ -339,12 +409,16 @@ describe('ChatService', () => {
 
     it('returns true for approved trip participant', async () => {
       participantsRepo.findOne.mockResolvedValue({ status: 'approved' });
-      expect(await service.checkRoomAccess('user-1', 'trip', 'trip-1')).toBe(true);
+      expect(await service.checkRoomAccess('user-1', 'trip', 'trip-1')).toBe(
+        true,
+      );
     });
 
     it('returns false when participant not found', async () => {
       participantsRepo.findOne.mockResolvedValue(null);
-      expect(await service.checkRoomAccess('user-1', 'trip', 'trip-1')).toBe(false);
+      expect(await service.checkRoomAccess('user-1', 'trip', 'trip-1')).toBe(
+        false,
+      );
     });
 
     it('uses cache on second call', async () => {
@@ -371,16 +445,19 @@ describe('ChatService', () => {
 
   describe('checkRateLimit', () => {
     it('allows 60 reactions', async () => {
-      for (let i = 0; i < 60; i++) expect(await service.checkRateLimit('user-1', 'react')).toBe(true);
+      for (let i = 0; i < 60; i++)
+        expect(await service.checkRateLimit('user-1', 'react')).toBe(true);
     });
 
     it('rejects the 61st reaction', async () => {
-      for (let i = 0; i < 60; i++) await service.checkRateLimit('user-1', 'react');
+      for (let i = 0; i < 60; i++)
+        await service.checkRateLimit('user-1', 'react');
       expect(await service.checkRateLimit('user-1', 'react')).toBe(false);
     });
 
     it('limits are per-user', async () => {
-      for (let i = 0; i < 60; i++) await service.checkRateLimit('user-1', 'react');
+      for (let i = 0; i < 60; i++)
+        await service.checkRateLimit('user-1', 'react');
       expect(await service.checkRateLimit('user-1', 'react')).toBe(false);
       expect(await service.checkRateLimit('user-2', 'react')).toBe(true);
     });
@@ -390,7 +467,8 @@ describe('ChatService', () => {
 
   describe('checkFloodControl', () => {
     it('allows up to 10 sends per second', async () => {
-      for (let i = 0; i < 10; i++) expect(await service.checkFloodControl('user-1')).toBe(true);
+      for (let i = 0; i < 10; i++)
+        expect(await service.checkFloodControl('user-1')).toBe(true);
     });
 
     it('blocks the 11th send within the same second', async () => {
@@ -408,7 +486,11 @@ describe('ChatService', () => {
   // ── queueMessage (Redis Streams, FIX #5 + #6) ────────────────────────────────
 
   describe('queueMessage', () => {
-    const dto = { room_type: 'trip' as const, room_id: 'trip-1', content: 'Hello' };
+    const dto = {
+      room_type: 'trip' as const,
+      room_id: 'trip-1',
+      content: 'Hello',
+    };
 
     it('returns formatted message immediately without DB save', async () => {
       const result = await service.queueMessage(makeUser(), dto);
@@ -425,8 +507,12 @@ describe('ChatService', () => {
       expect(stream).toHaveLength(1);
       // Verify different rooms go to different keys
       await service.queueMessage(makeUser(), { ...dto, room_id: 'trip-2' });
-      expect(redis.streams.get(chatStreamKey('trip', 'trip-2'))).toHaveLength(1);
-      expect(redis.streams.get(chatStreamKey('trip', 'trip-1'))).toHaveLength(1); // unchanged
+      expect(redis.streams.get(chatStreamKey('trip', 'trip-2'))).toHaveLength(
+        1,
+      );
+      expect(redis.streams.get(chatStreamKey('trip', 'trip-1'))).toHaveLength(
+        1,
+      ); // unchanged
     });
 
     it('assigns a stable UUID consistent between broadcast and DB write', async () => {
@@ -439,7 +525,10 @@ describe('ChatService', () => {
     });
 
     it('sanitizes HTML in content', async () => {
-      const result = await service.queueMessage(makeUser(), { ...dto, content: '<script>xss</script>' });
+      const result = await service.queueMessage(makeUser(), {
+        ...dto,
+        content: '<script>xss</script>',
+      });
       expect(result.content).not.toContain('<script>');
     });
 
@@ -471,7 +560,10 @@ describe('ChatService', () => {
 
     it('sets reply_to to null if parent is deleted', async () => {
       messagesRepo.findOne.mockResolvedValue(makeMessage({ isDeleted: true }));
-      const result = await service.queueMessage(makeUser(), { ...dto, reply_to_id: 'gone' });
+      const result = await service.queueMessage(makeUser(), {
+        ...dto,
+        reply_to_id: 'gone',
+      });
       expect(result.reply_to).toBeNull();
     });
   });
@@ -512,16 +604,32 @@ describe('ChatService', () => {
       await seedMessages(2);
       await service.flushStream(streamKey, 'w1');
       // After ACK, no pending entries
-      const pending = await redis.xpending(streamKey, CHAT_STREAM_GROUP, '-', '+', 10);
+      const pending = await redis.xpending(
+        streamKey,
+        CHAT_STREAM_GROUP,
+        '-',
+        '+',
+        10,
+      );
       expect(pending).toHaveLength(0);
     });
 
     it('does NOT remove entries before INSERT succeeds', async () => {
       await seedMessages(2);
-      messagesRepo._insertQb.execute.mockRejectedValueOnce(new Error('DB down'));
-      await expect(service.flushStream(streamKey, 'w1')).rejects.toThrow('DB down');
+      messagesRepo._insertQb.execute.mockRejectedValueOnce(
+        new Error('DB down'),
+      );
+      await expect(service.flushStream(streamKey, 'w1')).rejects.toThrow(
+        'DB down',
+      );
       // Entries still in PEL — recoverable
-      const pending = await redis.xpending(streamKey, CHAT_STREAM_GROUP, '-', '+', 10);
+      const pending = await redis.xpending(
+        streamKey,
+        CHAT_STREAM_GROUP,
+        '-',
+        '+',
+        10,
+      );
       expect(pending.length).toBeGreaterThan(0);
     });
 
@@ -542,7 +650,9 @@ describe('ChatService', () => {
       await service.flushStream(streamKey, 'w1');
       const insertedValues = messagesRepo._insertQb.values.mock.calls[0][0];
       // Each message should have its own Date object, not the same DB timestamp
-      const timestamps = insertedValues.map((v: any) => v.createdAt?.getTime?.());
+      const timestamps = insertedValues.map((v: any) =>
+        v.createdAt?.getTime?.(),
+      );
       expect(timestamps[0]).toBeDefined();
       expect(timestamps[1]).toBeDefined();
     });
@@ -553,12 +663,17 @@ describe('ChatService', () => {
   describe('getHistory', () => {
     it('throws ForbiddenException for non-member', async () => {
       participantsRepo.findOne.mockResolvedValue(null);
-      await expect(service.getHistory('user-1', 'trip', 'trip-1')).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.getHistory('user-1', 'trip', 'trip-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
     });
 
     it('uses compound cursor (createdAt, id) to prevent pagination skips (FIX #2)', async () => {
       participantsRepo.findOne.mockResolvedValue({ status: 'approved' });
-      const cursor = makeMessage({ id: 'c1', createdAt: new Date('2024-01-01T12:00:00Z') });
+      const cursor = makeMessage({
+        id: 'c1',
+        createdAt: new Date('2024-01-01T12:00:00Z'),
+      });
       messagesRepo.findOne.mockResolvedValueOnce(cursor);
 
       const selectQb = makeSelectQb([]);
@@ -569,7 +684,10 @@ describe('ChatService', () => {
 
       expect(selectQb.andWhere).toHaveBeenCalledWith(
         '(m.createdAt < :cursorTime OR (m.createdAt = :cursorTime AND m.id < :cursorId))',
-        expect.objectContaining({ cursorTime: cursor.createdAt, cursorId: 'c1' }),
+        expect.objectContaining({
+          cursorTime: cursor.createdAt,
+          cursorId: 'c1',
+        }),
       );
     });
 
@@ -599,36 +717,55 @@ describe('ChatService', () => {
   describe('toggleReaction', () => {
     it('throws NotFoundException when message not found', async () => {
       messagesRepo.findOne.mockResolvedValue(null);
-      await expect(service.toggleReaction('user-1', 'bad-id', '👍')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        service.toggleReaction('user-1', 'bad-id', '👍'),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('adds reaction using INSERT ON CONFLICT DO NOTHING (FIX #3)', async () => {
-      messagesRepo.findOne.mockResolvedValue(makeMessage({ roomType: 'trip', roomId: 'trip-1' }));
-      reactionsRepo._insertQb.execute.mockResolvedValue({ raw: [{ id: 'r1' }] });
-      reactionsRepo.find.mockResolvedValue([{ emoji: '👍', userId: 'user-1', messageId: 'msg-1' }]);
+      messagesRepo.findOne.mockResolvedValue(
+        makeMessage({ roomType: 'trip', roomId: 'trip-1' }),
+      );
+      reactionsRepo._insertQb.execute.mockResolvedValue({
+        raw: [{ id: 'r1' }],
+      });
+      reactionsRepo.find.mockResolvedValue([
+        { emoji: '👍', userId: 'user-1', messageId: 'msg-1' },
+      ]);
 
       const result = await service.toggleReaction('user-1', 'msg-1', '👍');
       expect(reactionsRepo._insertQb.onConflict).toHaveBeenCalledWith(
-        expect.stringContaining('ON CONFLICT')
+        expect.stringContaining('ON CONFLICT'),
       );
       expect(result.reactions['👍']).toContain('user-1');
     });
 
     it('removes reaction when INSERT returns empty (toggle off, FIX #3)', async () => {
-      messagesRepo.findOne.mockResolvedValue(makeMessage({ roomType: 'trip', roomId: 'trip-1' }));
+      messagesRepo.findOne.mockResolvedValue(
+        makeMessage({ roomType: 'trip', roomId: 'trip-1' }),
+      );
       reactionsRepo._insertQb.execute.mockResolvedValue({ raw: [] }); // conflict = exists
       reactionsRepo.delete.mockResolvedValue({});
       reactionsRepo.find.mockResolvedValue([]);
 
       const result = await service.toggleReaction('user-1', 'msg-1', '👍');
-      expect(reactionsRepo.delete).toHaveBeenCalledWith({ messageId: 'msg-1', userId: 'user-1', emoji: '👍' });
+      expect(reactionsRepo.delete).toHaveBeenCalledWith({
+        messageId: 'msg-1',
+        userId: 'user-1',
+        emoji: '👍',
+      });
       expect(result.reactions['👍']).toBeUndefined();
     });
 
     it('uses cached message room to skip DB SELECT (FIX #7)', async () => {
       // Prime the cache
-      await redis.set('chat:msg:room:msg-1', JSON.stringify({ roomType: 'trip', roomId: 'trip-1' }));
-      reactionsRepo._insertQb.execute.mockResolvedValue({ raw: [{ id: 'r1' }] });
+      await redis.set(
+        'chat:msg:room:msg-1',
+        JSON.stringify({ roomType: 'trip', roomId: 'trip-1' }),
+      );
+      reactionsRepo._insertQb.execute.mockResolvedValue({
+        raw: [{ id: 'r1' }],
+      });
       reactionsRepo.find.mockResolvedValue([]);
 
       await service.toggleReaction('user-1', 'msg-1', '👍');
@@ -641,7 +778,9 @@ describe('ChatService', () => {
 
   describe('getMessageRoom', () => {
     it('caches result after first DB call', async () => {
-      messagesRepo.findOne.mockResolvedValue(makeMessage({ roomType: 'trip', roomId: 'trip-1' }));
+      messagesRepo.findOne.mockResolvedValue(
+        makeMessage({ roomType: 'trip', roomId: 'trip-1' }),
+      );
       await service.getMessageRoom('msg-1');
       await service.getMessageRoom('msg-1');
       expect(messagesRepo.findOne).toHaveBeenCalledTimes(1);

@@ -17,15 +17,21 @@ export class FirebaseService implements OnModuleInit {
 
   onModuleInit() {
     if (!this.isEnabled) {
-      this.logger.warn('🔧 Firebase disabled - using console-based OTP (development mode)');
+      this.logger.warn(
+        '🔧 Firebase disabled - using console-based OTP (development mode)',
+      );
       return;
     }
 
     try {
-      const serviceAccountPath = this.configService.get('FIREBASE_SERVICE_ACCOUNT_PATH');
+      const serviceAccountPath = this.configService.get(
+        'FIREBASE_SERVICE_ACCOUNT_PATH',
+      );
 
       if (!serviceAccountPath) {
-        this.logger.warn('⚠️  FIREBASE_SERVICE_ACCOUNT_PATH not set - Firebase disabled');
+        this.logger.warn(
+          '⚠️  FIREBASE_SERVICE_ACCOUNT_PATH not set - Firebase disabled',
+        );
         this.isEnabled = false;
         return;
       }
@@ -59,7 +65,9 @@ export class FirebaseService implements OnModuleInit {
 
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
-      this.logger.log(`✅ Token verified for user: ${decodedToken.phone_number}`);
+      this.logger.log(
+        `✅ Token verified for user: ${decodedToken.phone_number}`,
+      );
       return decodedToken;
     } catch (error) {
       this.logger.error('❌ Token verification failed:', error.message);
@@ -106,7 +114,10 @@ export class FirebaseService implements OnModuleInit {
       await admin.auth().deleteUser(uid);
       this.logger.log(`🗑️  Deleted Firebase user: ${uid}`);
     } catch (error) {
-      this.logger.error(`Failed to delete Firebase user ${uid}:`, error.message);
+      this.logger.error(
+        `Failed to delete Firebase user ${uid}:`,
+        error.message,
+      );
     }
   }
 }

@@ -1,4 +1,11 @@
-import { IsIn, IsUUID, IsString, IsNotEmpty, MaxLength, IsOptional } from 'class-validator';
+import {
+  IsIn,
+  IsUUID,
+  IsString,
+  IsNotEmpty,
+  MaxLength,
+  IsOptional,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class SendMessageDto {

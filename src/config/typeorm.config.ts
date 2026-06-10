@@ -15,7 +15,7 @@ export const getTypeOrmConfig = (
       entities: [__dirname + '/../**/*.entity{.ts,.js}'],
       synchronize: true, // Auto-create tables in dev
       logging: configService.get('NODE_ENV') === 'development',
-    } as TypeOrmModuleOptions;
+    };
   }
 
   // PostgreSQL configuration for production
@@ -26,8 +26,11 @@ export const getTypeOrmConfig = (
     migrations: [__dirname + '/../migrations/*{.ts,.js}'],
     synchronize: configService.get('NODE_ENV') === 'development', // Only for development!
     logging: configService.get('NODE_ENV') === 'development',
-    ssl: configService.get('NODE_ENV') === 'production' ? {
-      rejectUnauthorized: false, // Required for Azure/AWS managed databases
-    } : false,
+    ssl:
+      configService.get('NODE_ENV') === 'production'
+        ? {
+            rejectUnauthorized: false, // Required for Azure/AWS managed databases
+          }
+        : false,
   };
 };

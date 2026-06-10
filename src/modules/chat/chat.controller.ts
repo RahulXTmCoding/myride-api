@@ -69,7 +69,11 @@ export class ChatController {
       throw new BadRequestException('room_type must be "trip" or "community"');
     }
 
-    const hasAccess = await this.chatService.checkRoomAccess(user.id, roomType, roomId);
+    const hasAccess = await this.chatService.checkRoomAccess(
+      user.id,
+      roomType,
+      roomId,
+    );
     if (!hasAccess) {
       throw new BadRequestException('Not a member of this room');
     }

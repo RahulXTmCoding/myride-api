@@ -89,12 +89,22 @@ describe('AuthService', () => {
       providers: [
         AuthService,
         { provide: getRepositoryToken(User), useValue: userRepo },
-        { provide: JwtService, useValue: { sign: jest.fn(() => 'tok'), verify: jest.fn() } },
+        {
+          provide: JwtService,
+          useValue: { sign: jest.fn(() => 'tok'), verify: jest.fn() },
+        },
         {
           provide: ConfigService,
-          useValue: { get: jest.fn((k: string) => (k === 'NODE_ENV' ? 'test' : undefined)) },
+          useValue: {
+            get: jest.fn((k: string) =>
+              k === 'NODE_ENV' ? 'test' : undefined,
+            ),
+          },
         },
-        { provide: FirebaseService, useValue: { isFirebaseEnabled: () => false } },
+        {
+          provide: FirebaseService,
+          useValue: { isFirebaseEnabled: () => false },
+        },
         { provide: REDIS_CLIENT, useValue: redis },
       ],
     }).compile();
@@ -169,7 +179,10 @@ describe('AuthService', () => {
       } catch (err) {
         const e = err as HttpException;
         expect(e.getStatus()).toBe(HttpStatus.BAD_REQUEST);
-        const resp = e.getResponse() as { error: string; attempts_remaining: number };
+        const resp = e.getResponse() as {
+          error: string;
+          attempts_remaining: number;
+        };
         expect(resp.error).toBe('INVALID_OTP');
         expect(resp.attempts_remaining).toBe(2);
       }
@@ -182,7 +195,9 @@ describe('AuthService', () => {
       } catch (err) {
         const e = err as HttpException;
         expect(e.getStatus()).toBe(HttpStatus.GONE);
-        expect((e.getResponse() as { error: string }).error).toBe('OTP_EXPIRED');
+        expect((e.getResponse() as { error: string }).error).toBe(
+          'OTP_EXPIRED',
+        );
       }
     });
   });
