@@ -4,8 +4,8 @@
 myRide is a group trip coordination app (think Spotify but for road trips).
 Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 
-## Current Status (as of 2026-06-02)
-**Stage: ~55% complete**
+## Current Status (as of 2026-06-10)
+**Stage: ~65% complete**
 
 ### ✅ Done
 - Full authentication system (dev OTP + Firebase production dual-mode)
@@ -38,13 +38,20 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
   - `chat.gateway.spec.ts` — 18 unit tests: handleConnection (no token, invalid token, valid), handleJoin (access denied, success, invalid room_type, no userId), handleLeave, handleSend (rate limited, access denied, success broadcast, unauthenticated, cheap-first order), handleReact (rate limited, message not found, cross-room security, success broadcast), handleTyping (silent drop on no access, invalid room_type, broadcast to room)
   - `test/chat.e2e-spec.ts` — integration tests (infra-skip pattern): WS connect/reject, room join/deny, message send+receive, room isolation, reaction toggle, cross-room reaction denial, REST history auth+access, cursor pagination, rate limiting (31st message)
 
+### ✅ Done (added 2026-06-10 — Live Map + Real-time Location Tracking)
+- **LocationModule** (`src/modules/location/`):
+  - `LocationService` — Redis-backed position store (`loc:pos:{tripId}:{userId}`, EX 3600), server-side rate limit (1/2s), Haversine min-move filter (10 m), reuses `ChatService.checkRoomAccess` for membership gating
+  - `LocationGateway` (`/location` WS namespace) — JWT handshake auth, `@UseGuards(WsJwtGuard)` per-event, Redis adapter (dedicated pub/sub connection), events: `location:join/leave/update` → `location:joined/snapshot/changed/left/error`, auto-cleanup on disconnect
+  - `LocationController` — `POST /api/v1/trips/:id/location` (REST fallback), `GET /api/v1/trips/:id/locations` (snapshot)
+  - Two Redis providers: `LOC_REDIS` (commands) + `LOC_ADAPTER_REDIS` (Socket.IO adapter)
+  - `LocationModule` registered in `AppModule`
+
 ### ❌ Not Yet Built (next priorities)
 1. **Users module** — no controller/service (only entity)
-2. **WebSocket gateway for location** — real-time location tracking, trip updates
-3. **Shareable links API** — generate/access/join via token
-4. **LiveKit voice token endpoint** — `/voice-call/token`
-5. **SOS API** — trigger/acknowledge emergency alerts
-6. **Community module** — communities, members, invites (chat room access for `room_type=community` currently grants access to all authenticated users as placeholder)
+2. **Shareable links API** — generate/access/join via token
+3. **LiveKit voice token endpoint** — `/voice-call/token`
+4. **SOS API** — trigger/acknowledge emergency alerts
+5. **Community module** — communities, members, invites
 
 ### ✅ Done (added 2026-06-02 — Trip CRUD + Discovery + Join Requests + Stop Progress)
 - **Trips module** (`feat/trips-crud`): full CRUD with PostGIS POINT stops, single-tx create with creator-as-admin participant
@@ -113,6 +120,13 @@ src/
     │       └── user-stop-progress.entity.ts
     ├── sos/
     │   └── entities/sos-alert.entity.ts     ← entity only
+    ├── location/              ← ✅ COMPLETE
+    │   ├── location.module.ts
+    │   ├── location.gateway.ts        ← Socket.IO /location namespace
+    │   ├── location.service.ts        ← Redis ops, rate-limit, membership
+    │   ├── location.controller.ts     ← REST: POST update + GET snapshot
+    │   └── dto/
+    │       └── update-location.dto.ts
     └── voice-call/                          ← entity only
 ```
 
@@ -181,12 +195,11 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ```
 
 ## Next Task to Implement
-**Live map / location tracking** — `src/modules/location/` with WebSocket gateway:
-- `WS  /api/v1/location` — connect + join trip room
-- `POST /api/v1/trips/:id/location` — REST fallback for location update
-- `GET  /api/v1/trips/:id/locations` — all participants' current locations
-- Snapshot table writes throttled (10s or 50m delta) — 7-day retention job
-- Membership check must mirror chat's `checkRoomAccess` (cache it)
+**Shareable links API** — generate / validate / join trip via one-time token:
+- `POST /api/v1/trips/:id/share` — generate signed link + QR
+- `GET  /api/v1/links/:token` — validate token, returns trip + join status
+- `POST /api/v1/links/:token/join` — instant join request via link
+- Frontend deep-link: `myride://trip/<token>` → TripLink screen → auto-join
 
 ## Standing Instructions for Claude (applies on any machine)
 

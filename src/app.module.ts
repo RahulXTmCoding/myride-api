@@ -11,6 +11,7 @@ import { TripsModule } from './modules/trips/trips.module';
 import { SosModule } from './modules/sos/sos.module';
 import { ShareLinksModule } from './modules/share-links/share-links.module';
 import { VoiceCallModule } from './modules/voice-call/voice-call.module';
+import { LocationModule } from './modules/location/location.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { VoiceCallModule } from './modules/voice-call/voice-call.module';
     SosModule,
     ShareLinksModule,
     VoiceCallModule,
+    LocationModule,
   ],
   controllers: [AppController],
   providers: [AppService],
