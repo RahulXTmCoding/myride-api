@@ -12,6 +12,7 @@ import { SosModule } from './modules/sos/sos.module';
 import { ShareLinksModule } from './modules/share-links/share-links.module';
 import { VoiceCallModule } from './modules/voice-call/voice-call.module';
 import { LocationModule } from './modules/location/location.module';
+import { CommunityModule } from './modules/community/community.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { LocationModule } from './modules/location/location.module';
     ShareLinksModule,
     VoiceCallModule,
     LocationModule,
+    CommunityModule,
   ],
   controllers: [AppController],
   providers: [AppService],

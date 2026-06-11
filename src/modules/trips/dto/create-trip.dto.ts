@@ -13,6 +13,7 @@ import {
   ArrayMinSize,
   MaxLength,
   MinLength,
+  IsUUID,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -116,6 +117,10 @@ export class CreateTripDto {
   @ValidateNested({ each: true })
   @Type(() => CreateTripStopDto)
   stops: CreateTripStopDto[];
+
+  @IsOptional()
+  @IsUUID()
+  community_id?: string;
 
   @IsOptional()
   @ValidateNested()

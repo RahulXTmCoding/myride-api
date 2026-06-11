@@ -5,7 +5,7 @@ myRide is a group trip coordination app (think Spotify but for road trips).
 Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 
 ## Current Status (as of 2026-06-11)
-**Stage: ~80% complete**
+**Stage: ~90% complete**
 
 ### ✅ Done
 - Full authentication system (dev OTP + Firebase production dual-mode)
@@ -60,7 +60,28 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
   - Access modes: `view-only` | `auto-join` | `password-protected`
   - Analytics: `total_views`, `join_requests`, `successful_joins` via atomic `increment()`
 
-### ✅ Done (added 2026-06-11 — SOS API)
+### ✅ Done (added 2026-06-11 — Community Module)
+- **CommunityModule** (`src/modules/community/`):
+  - 3 entities: `Community`, `CommunityMember`, `CommunityInvite`
+  - `community_id` nullable FK added to `Trip` entity
+  - `CommunityService` — create (with auto-slug + admin member seed), findMine, discover (open+search), findOne, update, remove (soft-delete), join (open communities), leave (creator guard), listMembers, invite (by phone, auto-add if already registered+open), respondToInvite (accept/reject), kickMember, isMember
+  - `CommunityController` — `@Controller('communities')`:
+    - `POST   /communities` — create
+    - `GET    /communities/mine` — my communities
+    - `GET    /communities/discover?search=&limit=&offset=` — open communities
+    - `GET    /communities/:id`
+    - `PATCH  /communities/:id` — update (admin)
+    - `DELETE /communities/:id` — soft-delete (admin)
+    - `POST   /communities/:id/join` — join open community
+    - `POST   /communities/:id/leave`
+    - `GET    /communities/:id/members`
+    - `DELETE /communities/:id/members/:userId` — kick (admin)
+    - `POST   /communities/:id/invites` — invite by phone array
+    - `POST   /communities/invites/:inviteId/accept`
+    - `POST   /communities/invites/:inviteId/reject`
+  - **ChatService community TODO fixed** — now queries `community_member` table instead of returning `true` for all community rooms
+  - **TripsService / ListTripsDto** — `community_id` filter added to `GET /trips`
+  - **CreateTripDto** — `community_id?: string` optional field
 - **SosModule** (`src/modules/sos/`):
   - `SosService` — raw SQL PostGIS POINT insert, Redis pub/sub fan-out on `sos:new` / `sos:update`, 30s self-cancel window → `false-alarm`, admin cancel → `resolved`, acknowledge appends to `acknowledged_by` JSONB, membership gating
   - `SosController` — `@Controller()` root (avoids UUID param collision):
@@ -73,7 +94,7 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 ### ❌ Not Yet Built (next priorities)
 1. **Users module** — no controller/service (only entity)
 2. **LiveKit voice token endpoint** — `/voice-call/token`
-3. **Community module** — communities, members, invites
+3. ~~**Community module** — communities, members, invites~~ ✅ DONE
 
 ### ✅ Done (added 2026-06-02 — Trip CRUD + Discovery + Join Requests + Stop Progress)
 - **Trips module** (`feat/trips-crud`): full CRUD with PostGIS POINT stops, single-tx create with creator-as-admin participant
@@ -162,6 +183,16 @@ src/
     │   └── dto/
     │       └── update-location.dto.ts
     └── voice-call/                          ← entity only
+    └── community/              ← ✅ COMPLETE
+        ├── community.module.ts
+        ├── community.controller.ts    ← REST: CRUD + join/leave/invite
+        ├── community.service.ts       ← all business logic
+        ├── dto/
+        │   └── community.dto.ts       ← Create/Update/Invite DTOs
+        └── entities/
+            ├── community.entity.ts
+            ├── community-member.entity.ts
+            └── community-invite.entity.ts
 ```
 
 ## Environment Setup (New Machine)
@@ -231,7 +262,6 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ## Next Task to Implement
 **LiveKit voice call token endpoint**:
 - `POST /api/v1/voice-call/token` — JWT-authenticated, generates a LiveKit access token for the caller, scoped to the trip room; returns `{ token, ws_url }`
-
 ## Standing Instructions for Claude (applies on any machine)
 
 ### After Every Git Push — MANDATORY

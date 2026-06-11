@@ -91,6 +91,7 @@ export class TripsService {
           ? new Date(dto.scheduled_start_time)
           : null,
         metadata: dto.metadata ?? null,
+        community_id: dto.community_id ?? null,
       } as Partial<Trip>);
 
       const savedTrip = await manager.save(Trip, trip);
@@ -197,6 +198,8 @@ export class TripsService {
       qb.andWhere('trip.visibility = :visibility', {
         visibility: dto.visibility,
       });
+    if (dto.community_id)
+      qb.andWhere('trip.community_id = :communityId', { communityId: dto.community_id });
 
     const [items, total] = await qb.getManyAndCount();
 

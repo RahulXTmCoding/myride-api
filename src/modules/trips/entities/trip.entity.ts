@@ -53,6 +53,11 @@ export class Trip {
   @Index()
   creator_id: string;
 
+  /** Optional: community this trip belongs to (FR-121) */
+  @Column({ type: 'uuid', nullable: true })
+  @Index()
+  community_id: string;
+
   // Participant limits
   @Column({ type: 'int', default: 20 })
   max_participants: number;

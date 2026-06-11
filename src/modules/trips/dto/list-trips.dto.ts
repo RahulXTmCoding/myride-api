@@ -1,4 +1,4 @@
-import { IsOptional, IsIn, IsInt, Min, Max } from 'class-validator';
+import { IsOptional, IsIn, IsInt, Min, Max, IsUUID } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ListTripsDto {
@@ -13,6 +13,10 @@ export class ListTripsDto {
   @IsOptional()
   @IsIn(['public', 'private'])
   visibility?: 'public' | 'private';
+
+  @IsOptional()
+  @IsUUID()
+  community_id?: string;
 
   @IsOptional()
   @Type(() => Number)

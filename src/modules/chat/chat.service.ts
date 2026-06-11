@@ -18,6 +18,7 @@ import {
 } from './entities/chat-message.entity';
 import { MessageReaction } from './entities/message-reaction.entity';
 import { TripParticipant } from '../trips/entities/trip-participant.entity';
+import { CommunityMember } from '../community/entities/community-member.entity';
 import { User } from '../users/entities/user.entity';
 import { SendMessageDto } from './dto/send-message.dto';
 
@@ -90,6 +91,9 @@ export class ChatService {
     @InjectRepository(TripParticipant)
     private readonly tripParticipantsRepo: Repository<TripParticipant>,
 
+    @InjectRepository(CommunityMember)
+    private readonly communityMemberRepo: Repository<CommunityMember>,
+
     @Inject(CHAT_REDIS)
     private readonly redis: Redis,
   ) {}
@@ -122,8 +126,10 @@ export class ChatService {
       });
       hasAccess = !!participant;
     } else if (roomType === 'community') {
-      // TODO: replace with community_members check when CommunityModule is built.
-      hasAccess = true;
+      const member = await this.communityMemberRepo.findOne({
+        where: { community_id: roomId, user_id: userId, is_active: true },
+      });
+      hasAccess = !!member;
     }
 
     // FIX #10: cache '1' for 5 min, '0' for only 30 sec so newly-added members

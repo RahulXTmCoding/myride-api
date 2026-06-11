@@ -11,6 +11,7 @@ import { WsJwtGuard } from './guards/ws-jwt.guard';
 import { ChatMessage } from './entities/chat-message.entity';
 import { MessageReaction } from './entities/message-reaction.entity';
 import { TripParticipant } from '../trips/entities/trip-participant.entity';
+import { CommunityMember } from '../community/entities/community-member.entity';
 import Redis from 'ioredis';
 
 function makeRedis(name: string): Redis {
@@ -23,7 +24,7 @@ function makeRedis(name: string): Redis {
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ChatMessage, MessageReaction, TripParticipant]),
+    TypeOrmModule.forFeature([ChatMessage, MessageReaction, TripParticipant, CommunityMember]),
 
     JwtModule.registerAsync({
       imports: [ConfigModule],
