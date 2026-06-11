@@ -4,8 +4,8 @@
 myRide is a group trip coordination app (think Spotify but for road trips).
 Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 
-## Current Status (as of 2026-06-10)
-**Stage: ~65% complete**
+## Current Status (as of 2026-06-11)
+**Stage: ~75% complete**
 
 ### ✅ Done
 - Full authentication system (dev OTP + Firebase production dual-mode)
@@ -46,12 +46,25 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
   - Two Redis providers: `LOC_REDIS` (commands) + `LOC_ADAPTER_REDIS` (Socket.IO adapter)
   - `LocationModule` registered in `AppModule`
 
+### ✅ Done (added 2026-06-11 — Shareable Links API)
+- **ShareLinksModule** (`src/modules/share-links/`):
+  - `ShareLinksService` — token generation (`randomBytes(24).toString('base64url')`), bcrypt password hashing, upsert/update/disable/regenerate link, resolveByToken (public, increments analytics), verifyPassword, joinViaLink (auto-approve for `auto-join` mode, pending for `password-protected`)
+  - `ShareLinksController` — single controller with `@Controller()` root prefix (separate from `@Controller('trips')`) to avoid Express 5 path-to-regexp v6 param collision:
+    - `POST   /trips/:tripId/share-link` — create or replace (admin)
+    - `GET    /trips/:tripId/share-link` — fetch current link + analytics (admin)
+    - `PATCH  /trips/:tripId/share-link` — update access mode / password / expiry (admin)
+    - `DELETE /trips/:tripId/share-link?action=disable|regenerate` (admin)
+    - `GET    /trips/link/:token` — public resolve (no auth, increments views)
+    - `POST   /trips/link/:token/verify-password` — public, returns `{ verified: true }`
+    - `POST   /trips/link/:token/join` — auth required, auto-approve on `auto-join` mode
+  - Access modes: `view-only` | `auto-join` | `password-protected`
+  - Analytics: `total_views`, `join_requests`, `successful_joins` via atomic `increment()`
+
 ### ❌ Not Yet Built (next priorities)
 1. **Users module** — no controller/service (only entity)
-2. **Shareable links API** — generate/access/join via token
-3. **LiveKit voice token endpoint** — `/voice-call/token`
-4. **SOS API** — trigger/acknowledge emergency alerts
-5. **Community module** — communities, members, invites
+2. **LiveKit voice token endpoint** — `/voice-call/token`
+3. **SOS API** — trigger/acknowledge emergency alerts
+4. **Community module** — communities, members, invites
 
 ### ✅ Done (added 2026-06-02 — Trip CRUD + Discovery + Join Requests + Stop Progress)
 - **Trips module** (`feat/trips-crud`): full CRUD with PostGIS POINT stops, single-tx create with creator-as-admin participant
@@ -120,6 +133,12 @@ src/
     │       └── user-stop-progress.entity.ts
     ├── sos/
     │   └── entities/sos-alert.entity.ts     ← entity only
+    ├── share-links/              ← ✅ COMPLETE
+    │   ├── share-links.module.ts
+    │   ├── share-links.controller.ts  ← admin + public token routes
+    │   ├── share-links.service.ts     ← token gen, bcrypt, analytics
+    │   └── dto/
+    │       └── share-link.dto.ts      ← Create/Update/VerifyPassword/JoinViaLink DTOs
     ├── location/              ← ✅ COMPLETE
     │   ├── location.module.ts
     │   ├── location.gateway.ts        ← Socket.IO /location namespace
@@ -195,11 +214,10 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ```
 
 ## Next Task to Implement
-**Shareable links API** — generate / validate / join trip via one-time token:
-- `POST /api/v1/trips/:id/share` — generate signed link + QR
-- `GET  /api/v1/links/:token` — validate token, returns trip + join status
-- `POST /api/v1/links/:token/join` — instant join request via link
-- Frontend deep-link: `myride://trip/<token>` → TripLink screen → auto-join
+**SOS API** — trigger and acknowledge emergency alerts:
+- `POST /api/v1/trips/:id/sos` — create SOS alert, notify all participants via WebSocket
+- `GET  /api/v1/trips/:id/sos` — list active SOS alerts for a trip
+- `PATCH /api/v1/trips/:id/sos/:alertId` — acknowledge / resolve alert (admin)
 
 ## Standing Instructions for Claude (applies on any machine)
 
