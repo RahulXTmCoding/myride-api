@@ -5,7 +5,7 @@ myRide is a group trip coordination app (think Spotify but for road trips).
 Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 
 ## Current Status (as of 2026-06-11)
-**Stage: ~75% complete**
+**Stage: ~80% complete**
 
 ### ✅ Done
 - Full authentication system (dev OTP + Firebase production dual-mode)
@@ -60,11 +60,20 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
   - Access modes: `view-only` | `auto-join` | `password-protected`
   - Analytics: `total_views`, `join_requests`, `successful_joins` via atomic `increment()`
 
+### ✅ Done (added 2026-06-11 — SOS API)
+- **SosModule** (`src/modules/sos/`):
+  - `SosService` — raw SQL PostGIS POINT insert, Redis pub/sub fan-out on `sos:new` / `sos:update`, 30s self-cancel window → `false-alarm`, admin cancel → `resolved`, acknowledge appends to `acknowledged_by` JSONB, membership gating
+  - `SosController` — `@Controller()` root (avoids UUID param collision):
+    - `POST /trips/:tripId/sos` — create alert (member auth)
+    - `GET  /trips/:tripId/sos` — active alerts
+    - `GET  /trips/:tripId/sos/all` — full history (last 100)
+    - `POST /sos/:id/cancel` — sender within 30s = false-alarm, else resolved (admin any time)
+    - `POST /sos/:id/acknowledge` — mark "I'm coming", idempotent
+
 ### ❌ Not Yet Built (next priorities)
 1. **Users module** — no controller/service (only entity)
 2. **LiveKit voice token endpoint** — `/voice-call/token`
-3. **SOS API** — trigger/acknowledge emergency alerts
-4. **Community module** — communities, members, invites
+3. **Community module** — communities, members, invites
 
 ### ✅ Done (added 2026-06-02 — Trip CRUD + Discovery + Join Requests + Stop Progress)
 - **Trips module** (`feat/trips-crud`): full CRUD with PostGIS POINT stops, single-tx create with creator-as-admin participant
@@ -131,8 +140,14 @@ src/
     │       ├── link-access-log.entity.ts
     │       ├── dynamic-stop-suggestion.entity.ts
     │       └── user-stop-progress.entity.ts
-    ├── sos/
-    │   └── entities/sos-alert.entity.ts     ← entity only
+    ├── sos/              ← ✅ COMPLETE
+    │   ├── sos.module.ts
+    │   ├── sos.controller.ts      ← REST: create/list/cancel/acknowledge
+    │   ├── sos.service.ts         ← PostGIS insert, Redis pubsub, cancel logic
+    │   ├── dto/
+    │   │   └── create-sos.dto.ts
+    │   └── entities/
+    │       └── sos-alert.entity.ts
     ├── share-links/              ← ✅ COMPLETE
     │   ├── share-links.module.ts
     │   ├── share-links.controller.ts  ← admin + public token routes
@@ -214,10 +229,8 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ```
 
 ## Next Task to Implement
-**SOS API** — trigger and acknowledge emergency alerts:
-- `POST /api/v1/trips/:id/sos` — create SOS alert, notify all participants via WebSocket
-- `GET  /api/v1/trips/:id/sos` — list active SOS alerts for a trip
-- `PATCH /api/v1/trips/:id/sos/:alertId` — acknowledge / resolve alert (admin)
+**LiveKit voice call token endpoint**:
+- `POST /api/v1/voice-call/token` — JWT-authenticated, generates a LiveKit access token for the caller, scoped to the trip room; returns `{ token, ws_url }`
 
 ## Standing Instructions for Claude (applies on any machine)
 
