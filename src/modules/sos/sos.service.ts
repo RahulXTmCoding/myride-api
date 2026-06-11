@@ -14,6 +14,8 @@ import { Trip } from '../trips/entities/trip.entity';
 import { TripParticipant } from '../trips/entities/trip-participant.entity';
 import { CreateSosDto } from './dto/create-sos.dto';
 import { CHAT_REDIS } from '../chat/chat.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { UsersService } from '../users/users.service';
 
 /**
  * SosService — FR-063..FR-075.
@@ -46,6 +48,8 @@ export class SosService {
     private readonly participantRepo: Repository<TripParticipant>,
     private readonly dataSource: DataSource,
     @Inject(CHAT_REDIS) private readonly redis: Redis,
+    private readonly notificationsService: NotificationsService,
+    private readonly usersService: UsersService,
   ) {}
 
   async create(
@@ -104,6 +108,33 @@ export class SosService {
       )
       .catch((e: Error) =>
         this.logger.warn(`sos:new publish failed: ${e?.message}`),
+      );
+
+    // Push notification to all trip participants (best-effort, fire-and-forget)
+    this.participantRepo
+      .find({ where: { trip_id: tripId, status: 'approved' } })
+      .then(async (participants) => {
+        const otherIds = participants
+          .map((p) => p.user_id)
+          .filter((id) => id !== senderId);
+        if (otherIds.length === 0) return;
+
+        const tokenMap = await this.usersService.findPushTokens(otherIds);
+        const tokens = Array.from(tokenMap.values());
+        if (tokens.length === 0) return;
+
+        const trip = await this.tripRepo.findOne({ where: { id: tripId } });
+        const senderName = alert.sender?.name ?? 'Someone';
+        const typeLabel = dto.alert_type ?? 'emergency';
+
+        await this.notificationsService.sendPushMany(tokens, {
+          title: `🚨 SOS Alert — ${trip?.title ?? 'Trip'}`,
+          body: `${senderName} triggered a ${typeLabel} alert. Open the app to help.`,
+          data: { type: 'sos_alert', trip_id: tripId, sos_id: id },
+        });
+      })
+      .catch((e: Error) =>
+        this.logger.warn(`SOS push notification failed: ${e?.message}`),
       );
 
     return alert;

@@ -83,6 +83,14 @@ export class User {
   @Column({ type: 'varchar', length: 500, nullable: true, select: false })
   refresh_token: string;
 
+  /** Expo / FCM push token for notifications */
+  @Column({ type: 'varchar', length: 512, nullable: true })
+  push_token: string;
+
+  /** Whether onboarding is complete (name set) */
+  @Column({ type: 'boolean', default: false })
+  is_onboarding_complete: boolean;
+
   @CreateDateColumn({ type: 'timestamp with time zone' })
   created_at: Date;
 

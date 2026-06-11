@@ -4,8 +4,8 @@
 myRide is a group trip coordination app (think Spotify but for road trips).
 Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 
-## Current Status (as of 2026-06-11)
-**Stage: ~90% complete**
+## Current Status (as of 2026-06-12)
+**Stage: ~95% complete**
 
 ### ✅ Done
 - Full authentication system (dev OTP + Firebase production dual-mode)
@@ -91,9 +91,21 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
     - `POST /sos/:id/cancel` — sender within 30s = false-alarm, else resolved (admin any time)
     - `POST /sos/:id/acknowledge` — mark "I'm coming", idempotent
 
+### ✅ Done (added 2026-06-12 — Users + Notifications modules)
+- **UsersModule** (`src/modules/users/`):
+  - `UsersController` — `GET /api/v1/users/me`, `PATCH /api/v1/users/me`, `GET /api/v1/users/:id`
+  - `UsersService` — `findById`, `updateMe` (name/bio/avatar_url/emergency_contacts/push_token), `findPushToken`, `findPushTokens` (bulk Map)
+  - `User` entity — added `push_token VARCHAR(512) nullable`, `is_onboarding_complete BOOLEAN default false`
+- **NotificationsModule** (`src/modules/notifications/`):
+  - `NotificationsService` — `sendPush(token, payload)`: routes Expo tokens to Expo HTTP v2 API, FCM tokens to Firebase Admin SDK (graceful no-op in dev); `sendPushMany()` fans out
+  - Dev mode: logs to console when Firebase not initialized; never blocks requests
+- **TripsService notifications** — on `approveJoin()`: fire-and-forget push to approved user: "🎉 Join request approved!"
+- **SosService notifications** — on `create()`: fire-and-forget push to all other trip participants: "🚨 SOS Alert"
+- **CommunityModule** — community access gating in ChatService now queries real `community_member` table
+
 ### ❌ Not Yet Built (next priorities)
-1. **Users module** — no controller/service (only entity)
-2. **LiveKit voice token endpoint** — `/voice-call/token`
+1. **LiveKit voice token endpoint** — `/voice-call/token`
+2. ~~**Users module**~~ ✅ DONE
 3. ~~**Community module** — communities, members, invites~~ ✅ DONE
 
 ### ✅ Done (added 2026-06-02 — Trip CRUD + Discovery + Join Requests + Stop Progress)
@@ -150,8 +162,16 @@ src/
     │   └── entities/
     │       ├── chat-message.entity.ts   (updated: room_type + room_id)
     │       └── message-reaction.entity.ts (new)
-    ├── users/
-    │   └── entities/user.entity.ts     ← entity only, no module
+    ├── users/              ← ✅ COMPLETE
+    │   ├── users.module.ts
+    │   ├── users.controller.ts    ← GET/PATCH /users/me, GET /users/:id
+    │   ├── users.service.ts       ← findById, updateMe, findPushToken/s
+    │   ├── dto/
+    │   │   └── user.dto.ts        ← UpdateProfileDto, EmergencyContactDto
+    │   └── entities/user.entity.ts
+    ├── notifications/      ← ✅ COMPLETE
+    │   ├── notifications.module.ts
+    │   └── notifications.service.ts ← sendPush (Expo + FCM), sendPushMany
     ├── trips/
     │   └── entities/                   ← entities only, no module
     │       ├── trip.entity.ts
@@ -262,6 +282,7 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ## Next Task to Implement
 **LiveKit voice call token endpoint**:
 - `POST /api/v1/voice-call/token` — JWT-authenticated, generates a LiveKit access token for the caller, scoped to the trip room; returns `{ token, ws_url }`
+- `VoiceCallModule` already has a `voice-call` namespace; add the `AccessToken` + `RoomServiceClient` from `livekit-server-sdk`
 ## Standing Instructions for Claude (applies on any machine)
 
 ### After Every Git Push — MANDATORY

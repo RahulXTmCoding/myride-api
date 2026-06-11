@@ -19,6 +19,8 @@ import { ListTripsDto } from './dto/list-trips.dto';
 import { DiscoverTripsDto } from './dto/discover-trips.dto';
 import { ChatService, CHAT_REDIS } from '../chat/chat.service';
 import { StopProgressService } from './stop-progress.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { UsersService } from '../users/users.service';
 import type Redis from 'ioredis';
 
 /**
@@ -48,6 +50,8 @@ export class TripsService {
     private readonly chatService: ChatService,
     @Inject(CHAT_REDIS) private readonly chatRedis: Redis,
     private readonly stopProgressService: StopProgressService,
+    private readonly notificationsService: NotificationsService,
+    private readonly usersService: UsersService,
   ) {}
 
   async create(creatorId: string, dto: CreateTripDto): Promise<Trip> {
@@ -539,6 +543,18 @@ export class TripsService {
         .catch((e) => {
           this.logger.warn(`Failed to seed stop progress: ${e?.message}`);
         });
+
+      // Push notification — fire-and-forget
+      this.usersService.findPushToken(userId).then((token) => {
+        if (token) {
+          this.notificationsService.sendPush(token, {
+            title: '🎉 Join request approved!',
+            body: `You've been approved to join "${trip.title}". Check it out!`,
+            data: { type: 'trip_approved', trip_id: tripId },
+          }).catch(() => undefined);
+        }
+      }).catch(() => undefined);
+
       return participant;
     });
   }

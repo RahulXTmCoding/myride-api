@@ -11,6 +11,8 @@ import { TripsService } from './trips.service';
 import { StopProgressService } from './stop-progress.service';
 import { AuthModule } from '../auth/auth.module';
 import { ChatModule } from '../chat/chat.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -20,8 +22,10 @@ import { ChatModule } from '../chat/chat.module';
       TripParticipant,
       UserStopProgress,
     ]),
-    AuthModule, // provides JwtAuthGuard
-    ChatModule, // provides ChatService + CHAT_REDIS for membership-change invalidation
+    AuthModule,
+    ChatModule,
+    NotificationsModule,
+    UsersModule,
   ],
   controllers: [TripsController],
   providers: [TripsService, StopProgressService],

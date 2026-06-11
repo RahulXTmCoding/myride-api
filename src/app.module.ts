@@ -13,6 +13,8 @@ import { ShareLinksModule } from './modules/share-links/share-links.module';
 import { VoiceCallModule } from './modules/voice-call/voice-call.module';
 import { LocationModule } from './modules/location/location.module';
 import { CommunityModule } from './modules/community/community.module';
+import { UsersModule } from './modules/users/users.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -39,6 +41,8 @@ import { CommunityModule } from './modules/community/community.module';
     VoiceCallModule,
     LocationModule,
     CommunityModule,
+    UsersModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

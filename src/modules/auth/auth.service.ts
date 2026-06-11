@@ -64,7 +64,7 @@ export class AuthService {
       phone: user.phone,
       name: user.name ?? null,
       avatar_url: user.profile_photo_url ?? null,
-      is_onboarding_complete: !!user.name,
+      is_onboarding_complete: user.is_onboarding_complete ?? !!user.name,
       created_at: user.created_at,
     };
   }
@@ -323,6 +323,7 @@ export class AuthService {
         });
       }
       user.name = trimmed;
+      user.is_onboarding_complete = true;
     }
 
     if (updates.avatar_url !== undefined) {
