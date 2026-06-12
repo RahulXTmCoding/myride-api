@@ -208,21 +208,28 @@ export class TripsService {
     const [items, total] = await qb.getManyAndCount();
 
     // Attach stops in a single batched query (avoid N+1)
+    // Use raw SQL to extract lat/lng from the PostGIS geography column
     if (items.length > 0) {
-      const stops = await this.stopRepo
-        .createQueryBuilder('stop')
-        .where('stop.trip_id IN (:...ids)', { ids: items.map((t) => t.id) })
-        .orderBy('stop.trip_id')
-        .addOrderBy('stop.stop_order', 'ASC')
-        .getMany();
-      const byTrip = new Map<string, TripStop[]>();
-      for (const s of stops) {
+      const stopRows: any[] = await this.stopRepo.manager.query(
+        `SELECT
+           s.id, s.trip_id, s.stop_order, s.name, s.description,
+           s.address, s.stop_type, s.duration_minutes, s.is_mandatory,
+           s.estimated_arrival_time, s.created_at, s.updated_at,
+           ST_Y(s.location::geometry) AS latitude,
+           ST_X(s.location::geometry) AS longitude
+         FROM trip_stops s
+         WHERE s.trip_id = ANY($1::uuid[])
+         ORDER BY s.trip_id, s.stop_order ASC`,
+        [items.map((t) => t.id)],
+      );
+      const byTrip = new Map<string, any[]>();
+      for (const s of stopRows) {
         const list = byTrip.get(s.trip_id) ?? [];
-        list.push(s);
+        list.push({ ...s, latitude: parseFloat(s.latitude), longitude: parseFloat(s.longitude) });
         byTrip.set(s.trip_id, list);
       }
       for (const t of items) {
-        (t as Trip & { stops: TripStop[] }).stops = byTrip.get(t.id) ?? [];
+        (t as Trip & { stops: any[] }).stops = byTrip.get(t.id) ?? [];
       }
     }
 
@@ -321,22 +328,28 @@ export class TripsService {
 
     const [items, total] = await qb.getManyAndCount();
 
-    // Attach stops in batch (mirrors list())
+    // Attach stops in batch (mirrors list()) — raw SQL to extract lat/lng
     if (items.length > 0) {
-      const stops = await this.stopRepo
-        .createQueryBuilder('stop')
-        .where('stop.trip_id IN (:...ids)', { ids: items.map((t) => t.id) })
-        .orderBy('stop.trip_id')
-        .addOrderBy('stop.stop_order', 'ASC')
-        .getMany();
-      const byTrip = new Map<string, TripStop[]>();
-      for (const s of stops) {
+      const stopRows: any[] = await this.stopRepo.manager.query(
+        `SELECT
+           s.id, s.trip_id, s.stop_order, s.name, s.description,
+           s.address, s.stop_type, s.duration_minutes, s.is_mandatory,
+           s.estimated_arrival_time, s.created_at, s.updated_at,
+           ST_Y(s.location::geometry) AS latitude,
+           ST_X(s.location::geometry) AS longitude
+         FROM trip_stops s
+         WHERE s.trip_id = ANY($1::uuid[])
+         ORDER BY s.trip_id, s.stop_order ASC`,
+        [items.map((t) => t.id)],
+      );
+      const byTrip = new Map<string, any[]>();
+      for (const s of stopRows) {
         const list = byTrip.get(s.trip_id) ?? [];
-        list.push(s);
+        list.push({ ...s, latitude: parseFloat(s.latitude), longitude: parseFloat(s.longitude) });
         byTrip.set(s.trip_id, list);
       }
       for (const t of items) {
-        (t as Trip & { stops: TripStop[] }).stops = byTrip.get(t.id) ?? [];
+        (t as Trip & { stops: any[] }).stops = byTrip.get(t.id) ?? [];
       }
     }
 
@@ -654,11 +667,24 @@ export class TripsService {
     });
     if (!trip) throw new NotFoundException({ error: 'TRIP_NOT_FOUND' });
 
-    const stops = await this.stopRepo.find({
-      where: { trip_id: tripId },
-      order: { stop_order: 'ASC' },
-    });
-    (trip as Trip & { stops: TripStop[] }).stops = stops;
+    // Use raw SQL so ST_X/ST_Y extract lat/lng from PostGIS geography WKB
+    const stops: any[] = await this.stopRepo.manager.query(
+      `SELECT
+         s.id, s.trip_id, s.stop_order, s.name, s.description,
+         s.address, s.stop_type, s.duration_minutes, s.is_mandatory,
+         s.estimated_arrival_time, s.created_at, s.updated_at,
+         ST_Y(s.location::geometry) AS latitude,
+         ST_X(s.location::geometry) AS longitude
+       FROM trip_stops s
+       WHERE s.trip_id = $1
+       ORDER BY s.stop_order ASC`,
+      [tripId],
+    );
+    (trip as Trip & { stops: any[] }).stops = stops.map((s) => ({
+      ...s,
+      latitude: parseFloat(s.latitude),
+      longitude: parseFloat(s.longitude),
+    }));
 
     const participants = await this.participantRepo.find({
       where: { trip_id: tripId },
