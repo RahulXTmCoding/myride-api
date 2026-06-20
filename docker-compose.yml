@@ -60,9 +60,9 @@ services:
     restart: unless-stopped
     command: --config /etc/livekit.yaml
     ports:
-      - '7880:7880'   # WebSocket
-      - '7881:7881'   # HTTP API
-      - '7882:7882/udp'  # WebRTC media
+      - '7880:7880'          # WebSocket signalling
+      - '7881:7881'          # HTTP API + TCP fallback for WebRTC
+      - '50000-50100:50000-50100/udp'  # WebRTC media (UDP)
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml
     healthcheck:

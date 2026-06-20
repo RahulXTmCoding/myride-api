@@ -6,9 +6,12 @@ rtc:
   # UDP ports for WebRTC
   port_range_start: 50000
   port_range_end: 50100
+  tcp_port: 7881
 
-  # Use docker internal IP for development
+  # For local dev with Android emulator: advertise 127.0.0.1 so ADB reverse
+  # port forwarding works. The emulator reaches host via tcp:7880 reverse tunnel.
   use_external_ip: false
+  node_ip: 127.0.0.1
 
 # Development keys (CHANGE IN PRODUCTION!)
 keys:
