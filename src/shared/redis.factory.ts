@@ -1,15 +1,14 @@
 /**
  * Shared Redis client factory.
  *
- * Azure Redis Enterprise OSSCluster:
- *   - Uses ioredis Cluster mode to handle MOVED/ASK redirects
- *   - Cluster topology returns internal shard IPs → we reroute all of them
- *     back to the public endpoint via a custom `redisOptions.host` override
- *     in the `beforeConnect` hook-style approach
- *   - All shards are reachable through the single public endpoint using TLS
+ * Azure Redis Enterprise uses OSSCluster policy — ioredis must use Cluster
+ * mode to handle MOVED redirects. All shard connections (including after
+ * MOVED redirects) need TLS enabled.
  *
- * Local dev (redis://):
- *   - Plain ioredis Redis client, no cluster overhead
+ * Cluster topology: master at 4.224.133.107:8503 (reachable within Azure).
+ * Public endpoint: attars.centralindia.redis.azure.net:10000 (entry point).
+ *
+ * Local dev (redis://): plain ioredis Redis client.
  */
 import Redis, { Cluster, ClusterOptions, RedisOptions } from 'ioredis';
 
@@ -21,49 +20,31 @@ export function createRedisClient(url?: string, _opts: RedisOptions = {}): AnyRe
   // Azure Redis Enterprise: rediss://:<key>@host:port  → Cluster mode
   if (redisUrl.startsWith('rediss://')) {
     const parsed = new URL(redisUrl);
-    const publicHost = parsed.hostname;
-    const publicPort = parseInt(parsed.port, 10) || 10000;
+    const host = parsed.hostname;
+    const port = parseInt(parsed.port, 10) || 10000;
     const password = parsed.password ? decodeURIComponent(parsed.password) : undefined;
 
     const clusterOpts: ClusterOptions = {
-      // Tell ioredis to connect to all cluster nodes through the public endpoint.
-      // When cluster topology returns internal IPs, ioredis Cluster will try to
-      // connect directly to those IPs (which aren't accessible). The
-      // `redisOptions` here applies to every node connection, but the host/port
-      // used for redirection comes from CLUSTER SLOTS response.
-      // We handle this by overriding the host resolution below.
       redisOptions: {
-        tls: {},
+        // TLS must be on for EVERY node connection — both the entry point and
+        // shard connections after MOVED redirects
+        tls: { rejectUnauthorized: false },
         password,
         maxRetriesPerRequest: 3,
         connectTimeout: 10000,
       },
       enableReadyCheck: false,
-      // Don't refresh slots — Enterprise manages topology, and refreshing
-      // would try to connect to internal shard IPs
-      slotsRefreshTimeout: 2000,
+      // Don't auto-refresh topology — avoid unnecessary CLUSTER SLOTS calls
+      slotsRefreshTimeout: 5000,
       slotsRefreshInterval: 0,
-      // After MOVED redirect, always go back to the public endpoint
-      // by remapping any IP the cluster reports back to the public host:port
-      dnsLookup: (_address: string, callback: (err: Error | null, address: string, family?: number) => void) => {
-        // Reroute all cluster node connections to the public endpoint
-        callback(null, publicHost);
-      },
       clusterRetryStrategy: (times: number) => {
-        if (times > 3) return null;
-        return times * 300;
+        if (times > 5) return null;
+        return Math.min(times * 300, 3000);
       },
-      lazyConnect: false,
     };
 
-    // Override: when ioredis Cluster gets MOVED to a shard IP, force it to
-    // connect to publicHost:publicPort instead
-    const cluster = new Cluster(
-      [{ host: publicHost, port: publicPort }],
-      clusterOpts,
-    );
-    cluster.on('error', () => {}); // suppress unhandled error events
-
+    const cluster = new Cluster([{ host, port }], clusterOpts);
+    cluster.on('error', () => {}); // prevent unhandled error crash
     return cluster;
   }
 
