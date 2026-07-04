@@ -1,0 +1,108 @@
+name: CI/CD — Build, Push & Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 1: Run tests and TypeScript compilation check
+  # ──────────────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript compilation check
+        run: npm run build
+
+      - name: Run tests
+        run: npm test -- --passWithNoTests --forceExit
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 2: Build Docker image and push to Azure Container Registry
+  # ──────────────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/myride-api:${{ github.sha }}
+            ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/myride-api:latest
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 3: Deploy to Azure Container Apps
+  # ──────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Azure Container Apps
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Azure Container Apps
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          resourceGroup: ${{ vars.AZURE_RESOURCE_GROUP }}
+          containerAppName: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+          imageToDeploy: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/myride-api:${{ github.sha }}
+          registryUrl: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}
+          registryUsername: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          registryPassword: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Update Container App environment variables
+        run: |
+          az containerapp update \
+            --name ${{ vars.AZURE_CONTAINER_APP_NAME }} \
+            --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --set-env-vars \
+              "NODE_ENV=production" \
+              "PORT=3000" \
+              "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
+              "JWT_ACCESS_EXPIRATION=15m" \
+              "JWT_REFRESH_EXPIRATION=30d" \
+              "ENABLE_FIREBASE=true" \
+              "DATABASE_URL=secretref:database-url" \
+              "REDIS_URL=secretref:redis-url" \
+              "JWT_SECRET=secretref:jwt-secret" \
+              "FIREBASE_SERVICE_ACCOUNT_PATH=secretref:firebase-service-account-path" \
+              "LIVEKIT_API_KEY=secretref:livekit-api-key" \
+              "LIVEKIT_API_SECRET=secretref:livekit-api-secret" \
+              "LIVEKIT_WS_URL=secretref:livekit-ws-url"
