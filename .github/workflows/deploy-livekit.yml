@@ -1,0 +1,67 @@
+name: Deploy LiveKit to Azure VM
+
+# Triggers:
+#   - Push to main that changes LiveKit config files
+#   - Manual trigger (workflow_dispatch) for forced redeploy
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'livekit.prod.yaml'
+      - 'docker-compose.livekit.yml'
+      - '.github/workflows/deploy-livekit.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy-livekit:
+    name: Deploy LiveKit to VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Copy config files to VM ──────────────────────────────────────────
+      - name: Copy LiveKit config files to VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.LIVEKIT_VM_HOST }}
+          username: ${{ secrets.LIVEKIT_VM_USER }}
+          key: ${{ secrets.LIVEKIT_VM_SSH_KEY }}
+          source: "livekit.prod.yaml,docker-compose.livekit.yml"
+          target: "/opt/myride-livekit"
+
+      # ── SSH in and restart LiveKit ────────────────────────────────────────
+      - name: Deploy LiveKit on VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIVEKIT_VM_HOST }}
+          username: ${{ secrets.LIVEKIT_VM_USER }}
+          key: ${{ secrets.LIVEKIT_VM_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/myride-livekit
+
+            echo "==> Pulling latest LiveKit image..."
+            docker pull livekit/livekit-server:latest
+
+            echo "==> Restarting LiveKit..."
+            docker compose -f docker-compose.livekit.yml down --remove-orphans || true
+            docker compose -f docker-compose.livekit.yml up -d
+
+            echo "==> Waiting for LiveKit to be healthy..."
+            sleep 5
+            for i in $(seq 1 10); do
+              if wget --no-verbose --tries=1 --spider http://localhost:7881/ 2>/dev/null; then
+                echo "✅ LiveKit is healthy (attempt $i)"
+                break
+              fi
+              echo "Waiting... attempt $i/10"
+              sleep 3
+            done
+
+            echo "==> LiveKit container status:"
+            docker compose -f docker-compose.livekit.yml ps
+
+            echo "==> Last 20 log lines:"
+            docker compose -f docker-compose.livekit.yml logs --tail=20 livekit

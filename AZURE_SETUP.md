@@ -181,13 +181,27 @@ https://myride-api.<random>.centralindia.azurecontainerapps.io
 
 ---
 
-## 7. LiveKit Cloud (External Service — Not Azure)
+## 7. LiveKit — Cloud or Self-Hosted
 
-LiveKit Cloud is **not** an Azure resource. It's a managed service.
+You have two options:
 
-1. Sign up at **https://cloud.livekit.io** (free tier available)
-2. Create a new project → note the **API Key**, **API Secret**, and **WebSocket URL** (format: `wss://your-project.livekit.cloud`)
-3. These become `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_WS_URL` in your app secrets
+### Option A — LiveKit Cloud (easiest, ~$0 for low traffic)
+1. Sign up at **https://cloud.livekit.io** (free tier: 10,000 mins/month)
+2. Create a project → get **API Key**, **API Secret**, **WSS URL**
+3. Use `wss://your-project.livekit.cloud` as `LIVEKIT_WS_URL`
+
+### Option B — Self-Hosted on Azure VM (~$14/month, full control)
+Run LiveKit on a dedicated Azure VM with a static public IP.
+Required because WebRTC needs UDP ports 50000–50100 which Azure Container Apps doesn't support.
+
+**→ See [`LIVEKIT_SELF_HOSTED.md`](./LIVEKIT_SELF_HOSTED.md) for the complete step-by-step guide.**
+
+Summary of extra resources needed:
+- Azure VM: `Standard_B1s` (~$8/mo)
+- Static Public IP (~$4/mo)
+- NSG with ports 7880, 7881, 3478, 50000–50100/UDP open
+
+The CI/CD pipeline (`.github/workflows/deploy-livekit.yml`) auto-deploys LiveKit config changes to the VM on push to `main`.
 
 ---
 
@@ -243,6 +257,9 @@ Go to **GitHub → repo → Settings → Secrets and variables → Actions → N
 | `AZURE_REGISTRY_USERNAME` | `myrideprod` | From `az acr credential show` |
 | `AZURE_REGISTRY_PASSWORD` | ACR password value | From `az acr credential show` → `passwords[0].value` |
 | `FRONTEND_URL` | `https://your-frontend-domain.com` | Your frontend URL |
+| `LIVEKIT_VM_HOST` | VM public IP e.g. `1.2.3.4` | Only if using self-hosted LiveKit |
+| `LIVEKIT_VM_USER` | `azureuser` | Only if using self-hosted LiveKit |
+| `LIVEKIT_VM_SSH_KEY` | Contents of deploy private key | Only if using self-hosted LiveKit — see LIVEKIT_SELF_HOSTED.md |
 
 ### Create the Service Principal for `AZURE_CREDENTIALS`
 
@@ -289,8 +306,10 @@ Go to **GitHub → repo → Settings → Secrets and variables → Actions → V
 | Azure Cache for Redis | Basic C0 | ~$16 |
 | Azure Container Apps | 1–3 replicas, 0.5 vCPU / 1 GiB | ~$5–15 (usage-based) |
 | Container Apps Environment | Shared | ~$0 (free with workloads) |
-| LiveKit Cloud | Free tier | $0 (up to 10k mins/mo) |
-| **Total (light traffic)** | | **~$40–55/mo** |
+| LiveKit Cloud (Option A) | Free tier | $0 (up to 10k mins/mo) |
+| **Total with LiveKit Cloud** | | **~$40–55/mo** |
+| LiveKit VM: Standard_B1s + Static IP (Option B) | Self-hosted | ~$14/mo |
+| **Total with self-hosted LiveKit** | | **~$54–69/mo** |
 
 > Container Apps pricing is consumption-based: you pay per vCPU-second and GiB-second of active use. At low traffic, the cost is minimal.
 

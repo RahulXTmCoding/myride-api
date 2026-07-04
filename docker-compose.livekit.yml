@@ -1,0 +1,37 @@
+# docker-compose.livekit.yml
+#
+# Runs LiveKit on the Azure VM (vm-myride-livekit).
+# Deploy with:
+#   docker compose -f docker-compose.livekit.yml up -d
+#
+# Environment variables are loaded from /etc/livekit.env (not committed):
+#   LIVEKIT_KEYS="your-api-key: your-api-secret"
+#
+# This compose file is separate from the main docker-compose.yml so LiveKit
+# runs on its own VM (needed for UDP port access — Azure Container Apps
+# does not support UDP).
+
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: myride-livekit
+    restart: always
+    network_mode: host          # Required: host networking so LiveKit can bind
+                                # UDP ports directly on the VM's public interface.
+                                # Bridge mode breaks UDP ICE candidate discovery.
+    env_file:
+      - /etc/livekit.env        # Contains: LIVEKIT_KEYS="apikey: apisecret"
+    volumes:
+      - ./livekit.prod.yaml:/etc/livekit.yaml:ro
+    command: --config /etc/livekit.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7881/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"

@@ -1,0 +1,52 @@
+# LiveKit production config for Azure VM deployment
+#
+# Differences from local dev (livekit.yaml):
+#   - use_external_ip: true  — LiveKit queries Azure IMDS to get the VM's public IP
+#                              and advertises it in ICE candidates so Android clients
+#                              can reach the media ports from outside the VM
+#   - node_ip is NOT set     — auto-detected via external IP discovery
+#   - keys are loaded from   — environment variable LIVEKIT_KEYS at runtime
+#                              (set in /etc/livekit.env on the VM, never committed)
+#   - turn/stun enabled      — built-in TURN over TLS port 443 so clients behind
+#                              strict firewalls that block UDP can still connect
+#
+# Deploy: docker compose -f docker-compose.livekit.yml up -d
+
+port: 7880
+bind_addresses:
+  - ""
+
+rtc:
+  # UDP port range for WebRTC media — must be open in Azure NSG
+  port_range_start: 50000
+  port_range_end: 50100
+
+  # TCP fallback for WebRTC (clients behind firewalls that block UDP)
+  tcp_port: 7881
+
+  # Auto-detect the VM's public IP via Azure IMDS / external IP check
+  # LiveKit calls https://api.ipify.org to discover the public IP
+  use_external_ip: true
+
+# Built-in TURN server — lets clients behind strict corporate firewalls connect
+# via TLS on port 443 instead of UDP. Uses the same VM public IP.
+turn:
+  enabled: true
+  domain: ""        # Leave blank — LiveKit uses the public IP directly
+  tls_port: 3478    # TURN/TLS port — add to Azure NSG
+  udp_port: 3478    # TURN/UDP port — add to Azure NSG
+  external_tls: false
+
+# API keys — loaded from LIVEKIT_KEYS environment variable at runtime
+# Format of env var:  LIVEKIT_KEYS="apikey1: apisecret1"
+# The docker-compose.livekit.yml reads this from /etc/livekit.env
+keys: {}
+
+logging:
+  level: info
+  pion_level: error   # suppress noisy WebRTC internals
+
+room:
+  empty_timeout: 300          # auto-delete empty rooms after 5 min
+  max_participants: 20        # myRide max group size
+  departure_timeout: 20       # seconds before a disconnected participant is removed
