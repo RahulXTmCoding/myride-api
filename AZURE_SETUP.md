@@ -1,66 +1,82 @@
 # Azure Deployment Guide — myRide API
 
-> **Region:** `centralindia` is used throughout (good latency for India-based users).  
-> Swap to `eastus` if you need cheaper/more available SKUs.
+> **Region:** `centralindia` throughout.  
+> **Resource Group:** `Attars` (shared with Attars app — created resources live here).  
+> **Subscription:** `e4f020f0-114e-45c3-baa1-f00c78df849a` (Learning-sub-microsoft)
+
+---
+
+## Resources Created ✅
+
+| Resource | Name | Type | Notes |
+|----------|------|------|-------|
+| Container Registry | `myrideprod` | ACR Basic | `myrideprod.azurecr.io` |
+| PostgreSQL | `myride-db` | Flexible Server B1ms | PostGIS enabled |
+| Web App | `myride-api` | Linux container | On shared ASP-Attars-bc47 B1 plan |
+
+## Shared Resources (from Attars app) ♻️
+
+| Resource | Name | Notes |
+|----------|------|-------|
+| App Service Plan | `ASP-Attars-bc47` | B1 Linux — myride-api deployed here |
+| Redis Enterprise | `attars` | `attars.centralindia.redis.azure.net:10000` |
+| Storage Account | `attars` | southindia — add new container for myride |
+| Front Door CDN | `attars-cdn` | Standard_AzureFrontDoor — add new endpoint |
+| Key Vault | `attars-backend-kv` | Store myride secrets here |
 
 ---
 
 ## Prerequisites
 
 ```bash
-# Install Azure CLI (if not already installed)
+# Install Azure CLI
 # Windows: https://aka.ms/installazurecliwindows
-# macOS:
-brew install azure-cli
 
 # Log in
 az login
 
-# Confirm subscription
-az account show
-az account set --subscription "<YOUR_SUBSCRIPTION_ID>"  # if you have multiple
+# Set subscription
+az account set --subscription "e4f020f0-114e-45c3-baa1-f00c78df849a"
 ```
 
 ---
 
-## 1. Resource Group
+## 1. Resource Providers (one-time)
 
 ```bash
-az group create \
-  --name rg-myride-prod \
-  --location centralindia
+az provider register --namespace Microsoft.ContainerRegistry --wait
+az provider register --namespace Microsoft.DBforPostgreSQL --wait
 ```
 
 ---
 
-## 2. Azure Container Registry (ACR)
-
-Stores your Docker images. ~**$5/month** (Basic tier).
+## 2. Azure Container Registry (ACR) ✅ Created
 
 ```bash
 az acr create \
   --name myrideprod \
-  --resource-group rg-myride-prod \
+  --resource-group Attars \
   --sku Basic \
-  --admin-enabled true
+  --admin-enabled true \
+  --location centralindia
 
-# Save these — you'll need them as GitHub Secrets:
+# Get credentials (needed as GitHub Secrets)
 az acr credential show \
   --name myrideprod \
-  --resource-group rg-myride-prod
-# Outputs: username, passwords (password + password2)
+  --resource-group Attars
+# → username: myrideprod, passwords[0].value = ACR_PASSWORD
 ```
 
 ---
 
-## 3. Azure Database for PostgreSQL Flexible Server
+## 3. Azure Database for PostgreSQL Flexible Server ✅ Created
 
 ~**$15/month** (Burstable B1ms, 32 GB storage).
 
 ```bash
 az postgres flexible-server create \
   --name myride-db \
-  --resource-group rg-myride-prod \
+  --resource-group Attars \
   --location centralindia \
   --admin-user myrideadmin \
   --admin-password "<STRONG_PASSWORD>" \
@@ -68,122 +84,119 @@ az postgres flexible-server create \
   --tier Burstable \
   --storage-size 32 \
   --version 16 \
-  --public-access 0.0.0.0  # allow Azure services; tighten later if needed
+  --public-access 0.0.0.0
 
 # Create the application database
 az postgres flexible-server db create \
   --server-name myride-db \
-  --resource-group rg-myride-prod \
+  --resource-group Attars \
   --database-name myride
-
-# Allow connections from Azure services (Container Apps outbound IPs are dynamic)
-az postgres flexible-server firewall-rule create \
-  --name AllowAzureServices \
-  --server-name myride-db \
-  --resource-group rg-myride-prod \
-  --start-ip-address 0.0.0.0 \
-  --end-ip-address 0.0.0.0
 ```
+
+**Host:** `myride-db.postgres.database.azure.com:5432`  
+**Connection string:** `postgresql://myrideadmin:<PASSWORD>@myride-db.postgres.database.azure.com:5432/myride?sslmode=require`
 
 ### Enable PostGIS (run after server is created)
 
-Connect via psql:
 ```bash
 psql "host=myride-db.postgres.database.azure.com port=5432 dbname=myride user=myrideadmin sslmode=require"
 ```
 
-Then run:
 ```sql
--- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- Verify
 SELECT PostGIS_Version();
 ```
 
-> **Note:** Azure Database for PostgreSQL Flexible Server supports PostGIS natively.  
-> If `CREATE EXTENSION` fails with "not in shared_preload_libraries", run:
+> If `CREATE EXTENSION` fails, run:
 > ```bash
 > az postgres flexible-server parameter set \
 >   --name shared_preload_libraries \
 >   --value "postgis" \
 >   --server-name myride-db \
->   --resource-group rg-myride-prod
+>   --resource-group Attars
 > ```
 > Then restart the server and retry.
 
 ---
 
-## 4. Azure Cache for Redis
+## 4. Redis (Shared — Attars Redis Enterprise) ♻️
 
-~**$16/month** (Basic C0, 250 MB).
+No creation needed — reuse existing Redis Enterprise.
+
+**Host:** `attars.centralindia.redis.azure.net`  
+**Port:** `10000`  
+**Connection string:** `rediss://:<PRIMARY_KEY>@attars.centralindia.redis.azure.net:10000`
 
 ```bash
-az redis create \
-  --name myride-redis \
-  --resource-group rg-myride-prod \
-  --location centralindia \
-  --sku Basic \
-  --vm-size c0
-
-# Get the connection string (SSL port 6380)
-az redis show \
-  --name myride-redis \
-  --resource-group rg-myride-prod \
-  --query "[hostName, sslPort]"
-
-az redis list-keys \
-  --name myride-redis \
-  --resource-group rg-myride-prod
-# Use primaryKey in your REDIS_URL:
-# redis://:primaryKey@myride-redis.redis.cache.windows.net:6380?ssl=true
+# Get access key
+az rest --method POST \
+  --uri "https://management.azure.com/subscriptions/e4f020f0-114e-45c3-baa1-f00c78df849a/resourceGroups/Attars/providers/Microsoft.Cache/redisEnterprise/attars/databases/default/listKeys?api-version=2025-04-01" \
+  --query primaryKey -o tsv
 ```
 
 ---
 
-## 5. Azure Container Apps Environment
+## 5. Azure App Service (Web App for Containers) ✅ Created
+
+Deployed on existing `ASP-Attars-bc47` B1 Linux plan (no extra cost).
 
 ```bash
-az containerapp env create \
-  --name myride-env \
-  --resource-group rg-myride-prod \
-  --location centralindia
-```
-
----
-
-## 6. Azure Container App
-
-Min 1 replica, max 3. Port 3000 with external ingress.
-
-```bash
-az containerapp create \
+# Create Web App (already done)
+az webapp create \
   --name myride-api \
-  --resource-group rg-myride-prod \
-  --environment myride-env \
-  --image myrideprod.azurecr.io/myride-api:latest \
-  --registry-server myrideprod.azurecr.io \
-  --registry-username myrideprod \
-  --registry-password "<ACR_PASSWORD>" \
-  --target-port 3000 \
-  --ingress external \
-  --min-replicas 1 \
-  --max-replicas 3 \
-  --cpu 0.5 \
-  --memory 1.0Gi
+  --resource-group Attars \
+  --plan ASP-Attars-bc47 \
+  --deployment-container-image-name myrideprod.azurecr.io/myride-api:latest
+
+# Configure ACR credentials
+az webapp config container set \
+  --name myride-api \
+  --resource-group Attars \
+  --container-image-name myrideprod.azurecr.io/myride-api:latest \
+  --container-registry-url https://myrideprod.azurecr.io \
+  --container-registry-user myrideprod \
+  --container-registry-password "<ACR_PASSWORD>"
+
+# Enable always-on + HTTP/2
+az webapp config set \
+  --name myride-api \
+  --resource-group Attars \
+  --always-on true \
+  --http20-enabled true \
+  --ftps-state Disabled
 ```
 
-After the first deploy the app gets a URL like:
-```
-https://myride-api.<random>.centralindia.azurecontainerapps.io
+**URL:** `https://myride-api.azurewebsites.net`
+
+---
+
+## 6. App Environment Variables
+
+```bash
+az webapp config appsettings set \
+  --name myride-api \
+  --resource-group Attars \
+  --settings \
+    NODE_ENV=production \
+    PORT=3000 \
+    WEBSITES_PORT=3000 \
+    JWT_ACCESS_EXPIRATION=15m \
+    JWT_REFRESH_EXPIRATION=30d \
+    ENABLE_FIREBASE=true \
+    FRONTEND_URL="https://your-frontend-domain.com" \
+    DATABASE_URL="postgresql://myrideadmin:<PASSWORD>@myride-db.postgres.database.azure.com:5432/myride?sslmode=require" \
+    REDIS_URL="rediss://:<PRIMARY_KEY>@attars.centralindia.redis.azure.net:10000" \
+    JWT_SECRET="<MIN_32_CHAR_RANDOM_STRING>" \
+    FIREBASE_SERVICE_ACCOUNT_PATH="/app/secrets/firebase.json" \
+    LIVEKIT_API_KEY="<YOUR_LIVEKIT_API_KEY>" \
+    LIVEKIT_API_SECRET="<YOUR_LIVEKIT_API_SECRET>" \
+    LIVEKIT_WS_URL="wss://<YOUR_PROJECT>.livekit.cloud"
 ```
 
 ---
 
 ## 7. LiveKit — Cloud or Self-Hosted
-
-You have two options:
 
 ### Option A — LiveKit Cloud (easiest, ~$0 for low traffic)
 1. Sign up at **https://cloud.livekit.io** (free tier: 10,000 mins/month)
@@ -191,58 +204,9 @@ You have two options:
 3. Use `wss://your-project.livekit.cloud` as `LIVEKIT_WS_URL`
 
 ### Option B — Self-Hosted on Azure VM (~$14/month, full control)
-Run LiveKit on a dedicated Azure VM with a static public IP.
-Required because WebRTC needs UDP ports 50000–50100 which Azure Container Apps doesn't support.
+Required because WebRTC needs UDP ports 50000–50100 which App Service doesn't support.
 
 **→ See [`LIVEKIT_SELF_HOSTED.md`](./LIVEKIT_SELF_HOSTED.md) for the complete step-by-step guide.**
-
-Summary of extra resources needed:
-- Azure VM: `Standard_B1s` (~$8/mo)
-- Static Public IP (~$4/mo)
-- NSG with ports 7880, 7881, 3478, 50000–50100/UDP open
-
-The CI/CD pipeline (`.github/workflows/deploy-livekit.yml`) auto-deploys LiveKit config changes to the VM on push to `main`.
-
----
-
-## App Secrets (Sensitive Env Vars on the Container App)
-
-Set secrets on the Container App. These are stored encrypted by Azure.
-
-```bash
-az containerapp secret set \
-  --name myride-api \
-  --resource-group rg-myride-prod \
-  --secrets \
-    "database-url=postgresql://myrideadmin:<PASSWORD>@myride-db.postgres.database.azure.com:5432/myride?sslmode=require" \
-    "redis-url=redis://:primaryKey@myride-redis.redis.cache.windows.net:6380?ssl=true" \
-    "jwt-secret=<MIN_32_CHAR_RANDOM_STRING>" \
-    "firebase-service-account-path=/app/secrets/firebase.json" \
-    "livekit-api-key=<YOUR_LIVEKIT_API_KEY>" \
-    "livekit-api-secret=<YOUR_LIVEKIT_API_SECRET>" \
-    "livekit-ws-url=wss://<YOUR_PROJECT>.livekit.cloud"
-```
-
-Reference secrets in environment variables:
-```bash
-az containerapp update \
-  --name myride-api \
-  --resource-group rg-myride-prod \
-  --set-env-vars \
-    "NODE_ENV=production" \
-    "PORT=3000" \
-    "JWT_ACCESS_EXPIRATION=15m" \
-    "JWT_REFRESH_EXPIRATION=30d" \
-    "ENABLE_FIREBASE=true" \
-    "FRONTEND_URL=https://your-frontend-domain.com" \
-    "DATABASE_URL=secretref:database-url" \
-    "REDIS_URL=secretref:redis-url" \
-    "JWT_SECRET=secretref:jwt-secret" \
-    "FIREBASE_SERVICE_ACCOUNT_PATH=secretref:firebase-service-account-path" \
-    "LIVEKIT_API_KEY=secretref:livekit-api-key" \
-    "LIVEKIT_API_SECRET=secretref:livekit-api-secret" \
-    "LIVEKIT_WS_URL=secretref:livekit-ws-url"
-```
 
 ---
 
@@ -255,34 +219,41 @@ Go to **GitHub → repo → Settings → Secrets and variables → Actions → N
 | `AZURE_CREDENTIALS` | Service principal JSON (see below) | `az ad sp create-for-rbac` |
 | `AZURE_REGISTRY_LOGIN_SERVER` | `myrideprod.azurecr.io` | Fixed — your ACR login server |
 | `AZURE_REGISTRY_USERNAME` | `myrideprod` | From `az acr credential show` |
-| `AZURE_REGISTRY_PASSWORD` | ACR password value | From `az acr credential show` → `passwords[0].value` |
+| `AZURE_REGISTRY_PASSWORD` | `<ACR_PASSWORD_FROM_AZ_ACR_CREDENTIAL_SHOW>` | From `az acr credential show` → `passwords[0].value` |
+| `DATABASE_URL` | `postgresql://myrideadmin:<DB_PASSWORD>@myride-db.postgres.database.azure.com:5432/myride?sslmode=require` | PostgreSQL connection string |
+| `REDIS_URL` | `rediss://:<REDIS_PRIMARY_KEY>@attars.centralindia.redis.azure.net:10000` | Redis Enterprise — get key from `az rest` command below |
+| `JWT_SECRET` | At least 32 random chars | `openssl rand -hex 32` |
 | `FRONTEND_URL` | `https://your-frontend-domain.com` | Your frontend URL |
-| `LIVEKIT_VM_HOST` | VM public IP e.g. `1.2.3.4` | Only if using self-hosted LiveKit |
+| `LIVEKIT_API_KEY` | Your LiveKit API key | LiveKit Cloud dashboard or self-hosted |
+| `LIVEKIT_API_SECRET` | Your LiveKit API secret | LiveKit Cloud dashboard or self-hosted |
+| `LIVEKIT_WS_URL` | `wss://your-project.livekit.cloud` | LiveKit Cloud dashboard |
+| `LIVEKIT_VM_HOST` | VM public IP | Only if using self-hosted LiveKit |
 | `LIVEKIT_VM_USER` | `azureuser` | Only if using self-hosted LiveKit |
-| `LIVEKIT_VM_SSH_KEY` | Contents of deploy private key | Only if using self-hosted LiveKit — see LIVEKIT_SELF_HOSTED.md |
+| `LIVEKIT_VM_SSH_KEY` | Contents of deploy private key | Only if using self-hosted LiveKit |
 
-### Create the Service Principal for `AZURE_CREDENTIALS`
+### Create the Service Principal for `AZURE_CREDENTIALS` ✅ Created
 
 ```bash
-az ad sp create-for-rbac \
+MSYS_NO_PATHCONV=1 az ad sp create-for-rbac \
   --name sp-myride-github \
   --role contributor \
-  --scopes /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-myride-prod \
+  --scopes /subscriptions/e4f020f0-114e-45c3-baa1-f00c78df849a/resourceGroups/Attars \
   --sdk-auth
 ```
 
-Copy the entire JSON output — it looks like:
+The JSON output looks like:
 ```json
 {
-  "clientId": "...",
-  "clientSecret": "...",
-  "subscriptionId": "...",
-  "tenantId": "...",
-  "activeDirectoryEndpointUrl": "...",
+  "clientId": "<SP_CLIENT_ID>",
+  "clientSecret": "<SP_CLIENT_SECRET>",
+  "subscriptionId": "e4f020f0-114e-45c3-baa1-f00c78df849a",
+  "tenantId": "d23fd221-fc80-4331-b14e-487d00d78ba0",
+  "activeDirectoryEndpointUrl": "https://login.microsoftonline.com",
+  "resourceManagerEndpointUrl": "https://management.azure.com/",
   ...
 }
 ```
-Paste this as the value for the `AZURE_CREDENTIALS` secret.
+Paste this entire JSON as the value for the `AZURE_CREDENTIALS` secret.
 
 ---
 
@@ -292,8 +263,9 @@ Go to **GitHub → repo → Settings → Secrets and variables → Actions → V
 
 | Variable Name | Value |
 |---|---|
-| `AZURE_RESOURCE_GROUP` | `rg-myride-prod` |
-| `AZURE_CONTAINER_APP_NAME` | `myride-api` |
+| `AZURE_RESOURCE_GROUP` | `Attars` |
+| `AZURE_WEBAPP_NAME` | `myride-api` |
+| `AZURE_REGISTRY_LOGIN_SERVER` | `myrideprod.azurecr.io` *(can also be a variable)* |
 
 ---
 
@@ -302,67 +274,58 @@ Go to **GitHub → repo → Settings → Secrets and variables → Actions → V
 | Resource | SKU | Est. cost/mo (USD) |
 |---|---|---|
 | Azure Container Registry | Basic | ~$5 |
-| Azure Database for PostgreSQL Flexible Server | Burstable B1ms | ~$15 |
-| Azure Cache for Redis | Basic C0 | ~$16 |
-| Azure Container Apps | 1–3 replicas, 0.5 vCPU / 1 GiB | ~$5–15 (usage-based) |
-| Container Apps Environment | Shared | ~$0 (free with workloads) |
+| Azure Database for PostgreSQL | Burstable B1ms | ~$15 |
+| Azure App Service | Shared B1 plan (already paid) | ~$0 additional |
+| Redis Enterprise | Shared (already paid) | ~$0 additional |
 | LiveKit Cloud (Option A) | Free tier | $0 (up to 10k mins/mo) |
-| **Total with LiveKit Cloud** | | **~$40–55/mo** |
+| **Total new resources** | | **~$20/mo** |
 | LiveKit VM: Standard_B1s + Static IP (Option B) | Self-hosted | ~$14/mo |
-| **Total with self-hosted LiveKit** | | **~$54–69/mo** |
 
-> Container Apps pricing is consumption-based: you pay per vCPU-second and GiB-second of active use. At low traffic, the cost is minimal.
+> The B1 App Service Plan is already paid by the Attars app. myride-api runs as a second app on the same plan at no extra compute cost.
 
 ---
 
 ## Firewall & Networking Notes
 
-### Container App → PostgreSQL
-- The `--public-access 0.0.0.0 0.0.0.0` firewall rule allows all Azure-hosted IPs (including Container Apps).
-- Container App outbound IPs are dynamic (shared SNAT). The `0.0.0.0` rule covers this.
-- For tighter security, retrieve the Container App environment's static IPs and add only those:
-  ```bash
-  az containerapp env show \
-    --name myride-env \
-    --resource-group rg-myride-prod \
-    --query "properties.staticIp"
+### Web App → PostgreSQL
+- PostgreSQL public access rule `AllowAllAzureServicesAndResourcesWithinAzureIps` already set.
+- App Service outbound IPs are fixed — for tighter security, add only those:
+  ```
+  52.140.85.233, 20.235.213.131, 52.140.86.1, 52.140.86.2, 98.70.235.214,
+  20.235.214.91, 4.188.90.255, 135.235.234.142, 4.188.93.36, 98.70.234.152
   ```
 
-### Container App → Redis
-- Azure Cache for Redis (Basic tier) is public-endpoint only. The SSL connection (`ssl=true` in the URL) is already enforced.
-- No extra firewall rules needed — Redis accepts connections from Azure services by default.
+### Web App → Redis Enterprise
+- Redis Enterprise (OSSCluster policy) uses SSL on port 10000.
+- URL must use `rediss://` (double-s) prefix with the primary key.
 
 ### SSL/TLS
-- The NestJS TypeORM config already has `rejectUnauthorized: false` for production, which handles Azure's self-signed Postgres cert.
-- Redis connections should include `ssl=true` (or `tls={}`) in the URL.
+- Azure App Service provides free managed TLS for `*.azurewebsites.net`.
+- NestJS TypeORM config has `rejectUnauthorized: false` for production (Azure self-signed Postgres cert).
 
 ---
 
 ## Custom Domain + SSL
 
-Azure Container Apps supports custom domains with automatic TLS certificates:
-
 ```bash
 # 1. Add your domain
-az containerapp hostname add \
-  --name myride-api \
-  --resource-group rg-myride-prod \
+az webapp config hostname add \
+  --webapp-name myride-api \
+  --resource-group Attars \
   --hostname api.yourdomain.com
 
 # 2. Bind a managed certificate (free, auto-renews)
-az containerapp ssl bind \
+az webapp config ssl bind \
   --name myride-api \
-  --resource-group rg-myride-prod \
+  --resource-group Attars \
   --hostname api.yourdomain.com \
-  --environment myride-env
+  --ssl-type SNI
 ```
 
-Before running these commands, add a **CNAME record** in your DNS:
+Add a **CNAME record** in your DNS first:
 ```
-api  →  myride-api.<random>.centralindia.azurecontainerapps.io
+api  →  myride-api.azurewebsites.net
 ```
-
-Azure will automatically provision and renew a Let's Encrypt TLS certificate.
 
 ---
 
@@ -371,19 +334,22 @@ Azure will automatically provision and renew a Let's Encrypt TLS certificate.
 After the pipeline runs:
 ```bash
 # Check the app is running
-curl https://myride-api.<random>.centralindia.azurecontainerapps.io/
+curl https://myride-api.azurewebsites.net/
 
-# Check logs (live tail)
-az containerapp logs show \
+# Stream live logs
+az webapp log tail \
   --name myride-api \
-  --resource-group rg-myride-prod \
-  --follow
+  --resource-group Attars
 
-# Check revision status
-az containerapp revision list \
+# Check deployment status
+az webapp deployment list-publishing-credentials \
   --name myride-api \
-  --resource-group rg-myride-prod \
-  --output table
+  --resource-group Attars
+
+# View current container settings
+az webapp config container show \
+  --name myride-api \
+  --resource-group Attars
 ```
 
 ---
@@ -393,51 +359,44 @@ az containerapp revision list \
 ```bash
 # 0. Login
 az login
+az account set --subscription "e4f020f0-114e-45c3-baa1-f00c78df849a"
 
-# 1. Resource group
-az group create --name rg-myride-prod --location centralindia
+# 1. Register providers (one-time)
+az provider register --namespace Microsoft.ContainerRegistry --wait
+az provider register --namespace Microsoft.DBforPostgreSQL --wait
 
-# 2. ACR
-az acr create --name myrideprod --resource-group rg-myride-prod --sku Basic --admin-enabled true
+# 2. ACR ✅ done
+az acr create --name myrideprod --resource-group Attars --sku Basic --admin-enabled true --location centralindia
 
-# 3. PostgreSQL
+# 3. PostgreSQL ✅ done
 az postgres flexible-server create \
-  --name myride-db --resource-group rg-myride-prod --location centralindia \
+  --name myride-db --resource-group Attars --location centralindia \
   --admin-user myrideadmin --admin-password "<PASSWORD>" \
   --sku-name Standard_B1ms --tier Burstable --storage-size 32 --version 16 \
   --public-access 0.0.0.0
 
 az postgres flexible-server db create \
-  --server-name myride-db --resource-group rg-myride-prod --database-name myride
+  --server-name myride-db --resource-group Attars --database-name myride
 
-# 4. Redis
-az redis create --name myride-redis --resource-group rg-myride-prod \
-  --location centralindia --sku Basic --vm-size c0
+# 4. Enable PostGIS (connect via psql first)
+# CREATE EXTENSION IF NOT EXISTS postgis;
+# CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
-# 5. Container Apps Environment
-az containerapp env create --name myride-env --resource-group rg-myride-prod --location centralindia
+# 5. Web App ✅ done (on existing ASP-Attars-bc47)
+az webapp create \
+  --name myride-api --resource-group Attars --plan ASP-Attars-bc47 \
+  --deployment-container-image-name myrideprod.azurecr.io/myride-api:latest
 
-# 6. Container App (initial — GitHub Actions will handle subsequent deploys)
-az containerapp create \
-  --name myride-api --resource-group rg-myride-prod --environment myride-env \
-  --image myrideprod.azurecr.io/myride-api:latest \
-  --registry-server myrideprod.azurecr.io \
-  --registry-username myrideprod --registry-password "<ACR_PASSWORD>" \
-  --target-port 3000 --ingress external \
-  --min-replicas 1 --max-replicas 3 --cpu 0.5 --memory 1.0Gi
+# 6. Set env vars (after filling in real values)
+az webapp config appsettings set --name myride-api --resource-group Attars \
+  --settings \
+    NODE_ENV=production PORT=3000 WEBSITES_PORT=3000 \
+    DATABASE_URL="postgresql://myrideadmin:<PASSWORD>@myride-db.postgres.database.azure.com:5432/myride?sslmode=require" \
+    REDIS_URL="rediss://:<REDIS_KEY>@attars.centralindia.redis.azure.net:10000" \
+    JWT_SECRET="<MIN_32_CHAR_RANDOM_STRING>" \
+    LIVEKIT_API_KEY="..." LIVEKIT_API_SECRET="..." LIVEKIT_WS_URL="wss://..."
 
-# 7. Set secrets (after filling in real values)
-az containerapp secret set --name myride-api --resource-group rg-myride-prod \
-  --secrets \
-    "database-url=postgresql://myrideadmin:<PASSWORD>@myride-db.postgres.database.azure.com:5432/myride?sslmode=require" \
-    "redis-url=redis://:primaryKey@myride-redis.redis.cache.windows.net:6380?ssl=true" \
-    "jwt-secret=<MIN_32_CHAR_RANDOM_STRING>" \
-    "firebase-service-account-path=/app/secrets/firebase.json" \
-    "livekit-api-key=<YOUR_LIVEKIT_API_KEY>" \
-    "livekit-api-secret=<YOUR_LIVEKIT_API_SECRET>" \
-    "livekit-ws-url=wss://<YOUR_PROJECT>.livekit.cloud"
-
-# 8. Service principal for GitHub Actions
-az ad sp create-for-rbac --name sp-myride-github --role contributor \
-  --scopes /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-myride-prod --sdk-auth
+# 7. Service principal for GitHub Actions ✅ done
+MSYS_NO_PATHCONV=1 az ad sp create-for-rbac --name sp-myride-github --role contributor \
+  --scopes /subscriptions/e4f020f0-114e-45c3-baa1-f00c78df849a/resourceGroups/Attars --sdk-auth
 ```

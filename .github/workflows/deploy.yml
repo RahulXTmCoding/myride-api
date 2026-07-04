@@ -1,4 +1,4 @@
-name: CI/CD — Build, Push & Deploy to Azure Container Apps
+name: CI/CD — Build, Push & Deploy to Azure App Service
 
 on:
   push:
@@ -61,48 +61,43 @@ jobs:
             ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/myride-api:latest
 
   # ──────────────────────────────────────────────────────────────────────────
-  # Job 3: Deploy to Azure Container Apps
+  # Job 3: Deploy to Azure App Service (Web App for Containers)
   # ──────────────────────────────────────────────────────────────────────────
   deploy:
-    name: Deploy to Azure Container Apps
+    name: Deploy to Azure App Service
     runs-on: ubuntu-latest
     needs: build-and-push
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Log in to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy to Azure Container Apps
-        uses: azure/container-apps-deploy-action@v1
+      - name: Deploy container image to Web App
+        uses: azure/webapps-deploy@v3
         with:
-          resourceGroup: ${{ vars.AZURE_RESOURCE_GROUP }}
-          containerAppName: ${{ vars.AZURE_CONTAINER_APP_NAME }}
-          imageToDeploy: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/myride-api:${{ github.sha }}
-          registryUrl: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}
-          registryUsername: ${{ secrets.AZURE_REGISTRY_USERNAME }}
-          registryPassword: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          resource-group-name: ${{ vars.AZURE_RESOURCE_GROUP }}
+          images: ${{ secrets.AZURE_REGISTRY_LOGIN_SERVER }}/myride-api:${{ github.sha }}
 
-      - name: Update Container App environment variables
+      - name: Update App Service application settings
         run: |
-          az containerapp update \
-            --name ${{ vars.AZURE_CONTAINER_APP_NAME }} \
+          az webapp config appsettings set \
+            --name ${{ vars.AZURE_WEBAPP_NAME }} \
             --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
-            --set-env-vars \
-              "NODE_ENV=production" \
-              "PORT=3000" \
-              "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" \
-              "JWT_ACCESS_EXPIRATION=15m" \
-              "JWT_REFRESH_EXPIRATION=30d" \
-              "ENABLE_FIREBASE=true" \
-              "DATABASE_URL=secretref:database-url" \
-              "REDIS_URL=secretref:redis-url" \
-              "JWT_SECRET=secretref:jwt-secret" \
-              "FIREBASE_SERVICE_ACCOUNT_PATH=secretref:firebase-service-account-path" \
-              "LIVEKIT_API_KEY=secretref:livekit-api-key" \
-              "LIVEKIT_API_SECRET=secretref:livekit-api-secret" \
-              "LIVEKIT_WS_URL=secretref:livekit-ws-url"
+            --settings \
+              NODE_ENV=production \
+              PORT=3000 \
+              WEBSITES_PORT=3000 \
+              FRONTEND_URL="${{ secrets.FRONTEND_URL }}" \
+              JWT_ACCESS_EXPIRATION=15m \
+              JWT_REFRESH_EXPIRATION=30d \
+              ENABLE_FIREBASE=true \
+              DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+              REDIS_URL="${{ secrets.REDIS_URL }}" \
+              JWT_SECRET="${{ secrets.JWT_SECRET }}" \
+              FIREBASE_SERVICE_ACCOUNT_PATH="/app/secrets/firebase.json" \
+              LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}" \
+              LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}" \
+              LIVEKIT_WS_URL="${{ secrets.LIVEKIT_WS_URL }}"
