@@ -12,6 +12,7 @@ import {
 import { ChatMessage } from './entities/chat-message.entity';
 import { MessageReaction } from './entities/message-reaction.entity';
 import { TripParticipant } from '../trips/entities/trip-participant.entity';
+import { CommunityMember } from '../community/entities/community-member.entity';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -350,12 +351,14 @@ describe('ChatService', () => {
   let messagesRepo: ReturnType<typeof makeRepo>;
   let reactionsRepo: ReturnType<typeof makeRepo>;
   let participantsRepo: ReturnType<typeof makeRepo>;
+  let communityMembersRepo: ReturnType<typeof makeRepo>;
 
   beforeEach(async () => {
     redis = new RedisMock();
     messagesRepo = makeRepo();
     reactionsRepo = makeRepo();
     participantsRepo = makeRepo();
+    communityMembersRepo = makeRepo();
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -368,6 +371,10 @@ describe('ChatService', () => {
         {
           provide: getRepositoryToken(TripParticipant),
           useValue: participantsRepo,
+        },
+        {
+          provide: getRepositoryToken(CommunityMember),
+          useValue: communityMembersRepo,
         },
         { provide: CHAT_REDIS, useValue: redis },
       ],
@@ -386,13 +393,22 @@ describe('ChatService', () => {
       );
     });
 
-    it('returns true for community room (placeholder)', async () => {
+    it('returns true for community room when user is a member', async () => {
+      communityMembersRepo.findOne.mockResolvedValue({ user_id: 'user-1', community_id: 'comm-1' });
       expect(
         await service.checkRoomAccess('user-1', 'community', 'comm-1'),
       ).toBe(true);
     });
 
+    it('returns false for community room when user is not a member', async () => {
+      communityMembersRepo.findOne.mockResolvedValue(null);
+      expect(
+        await service.checkRoomAccess('user-1', 'community', 'comm-1'),
+      ).toBe(false);
+    });
+
     it('caches community result for 5 min (300s)', async () => {
+      communityMembersRepo.findOne.mockResolvedValue({ user_id: 'user-1', community_id: 'comm-1' });
       await service.checkRoomAccess('user-1', 'community', 'comm-1');
       const entry = redis.store.get('chat:access:community:comm-1:user-1');
       expect(entry?.expiresAt).toBeGreaterThan(Date.now() + 290_000);
