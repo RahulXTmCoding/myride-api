@@ -13,13 +13,10 @@ import { MessageReaction } from './entities/message-reaction.entity';
 import { TripParticipant } from '../trips/entities/trip-participant.entity';
 import { CommunityMember } from '../community/entities/community-member.entity';
 import Redis from 'ioredis';
+import { AnyRedis, createRedisClient } from '../../shared/redis.factory';
 
-function makeRedis(name: string): Redis {
-  return new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-    maxRetriesPerRequest: 2,
-    lazyConnect: false,
-    connectionName: name,
-  });
+function makeRedis(name: string): AnyRedis {
+  return createRedisClient(undefined, { connectionName: name } as any);
 }
 
 @Module({
@@ -60,11 +57,11 @@ function makeRedis(name: string): Redis {
      */
     {
       provide: CHAT_REDIS,
-      useFactory: (): Redis => makeRedis('myride-chat'),
+      useFactory: (): AnyRedis => makeRedis('myride-chat'),
     },
     {
       provide: CHAT_ADAPTER_REDIS,
-      useFactory: (): Redis => makeRedis('myride-chat-adapter'),
+      useFactory: (): AnyRedis => makeRedis('myride-chat-adapter'),
     },
   ],
   controllers: [ChatController],

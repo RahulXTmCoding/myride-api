@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import Redis from 'ioredis';
 import { Pool } from 'pg';
+import { AnyRedis, createRedisClient } from './shared/redis.factory';
 
 @Injectable()
 export class AppService implements OnModuleInit, OnModuleDestroy {
@@ -8,26 +9,21 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
     connectionString: process.env.DATABASE_URL,
   });
 
-  private readonly redis = new Redis(
-    process.env.REDIS_URL ?? 'redis://localhost:6379',
-    {
-      maxRetriesPerRequest: 2,
-    },
-  );
+  private readonly redis: AnyRedis = createRedisClient();
 
   async onModuleInit() {
     await this.pool.query('SELECT 1');
-    await this.redis.ping();
+    await (this.redis as Redis).ping();
   }
 
   async onModuleDestroy() {
-    await Promise.all([this.pool.end(), this.redis.quit()]);
+    await Promise.all([this.pool.end(), (this.redis as any).quit()]);
   }
 
   async getHealth() {
     const [databaseProbe, redisProbe] = await Promise.allSettled([
       this.pool.query('SELECT 1'),
-      this.redis.ping(),
+      (this.redis as Redis).ping(),
     ]);
 
     const database = databaseProbe.status === 'fulfilled';

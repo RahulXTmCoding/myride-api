@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { AnyRedis, createRedisClient } from '../../shared/redis.factory';
 
 import { LocationGateway, LOC_ADAPTER_REDIS } from './location.gateway';
 import { LocationService, LOC_REDIS } from './location.service';
@@ -9,12 +10,8 @@ import { LocationController } from './location.controller';
 import { ChatModule } from '../chat/chat.module';
 import { WsJwtGuard } from '../chat/guards/ws-jwt.guard';
 
-function makeRedis(name: string): Redis {
-  return new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-    maxRetriesPerRequest: 2,
-    lazyConnect: false,
-    connectionName: name,
-  });
+function makeRedis(name: string): AnyRedis {
+  return createRedisClient(undefined, { connectionName: name } as any);
 }
 
 @Module({
@@ -44,11 +41,11 @@ function makeRedis(name: string): Redis {
      */
     {
       provide: LOC_REDIS,
-      useFactory: (): Redis => makeRedis('myride-location'),
+      useFactory: (): AnyRedis => makeRedis('myride-location'),
     },
     {
       provide: LOC_ADAPTER_REDIS,
-      useFactory: (): Redis => makeRedis('myride-location-adapter'),
+      useFactory: (): AnyRedis => makeRedis('myride-location-adapter'),
     },
   ],
   controllers: [LocationController],
