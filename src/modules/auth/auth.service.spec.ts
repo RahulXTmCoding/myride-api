@@ -134,7 +134,9 @@ describe('AuthService', () => {
 
     it('returns expires_in=300 and resend_after=60 on success', async () => {
       const res = await service.requestOtp('+919876543211');
-      expect(res).toEqual({ success: true, expires_in: 300, resend_after: 60 });
+      expect(res).toMatchObject({ success: true, expires_in: 300, resend_after: 60 });
+      // dev_otp is present in non-production (NODE_ENV=test here)
+      expect(typeof (res as any).dev_otp).toBe('string');
     });
   });
 
