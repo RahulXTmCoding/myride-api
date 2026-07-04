@@ -103,7 +103,7 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 - **SosService notifications** — on `create()`: fire-and-forget push to all other trip participants: "🚨 SOS Alert"
 - **CommunityModule** — community access gating in ChatService now queries real `community_member` table
 
-### ✅ Done (added 2026-07-04 — Production Docker + Azure CI/CD)
+### ✅ Done (added 2026-07-04 — Production Docker + Azure CI/CD + Resources Created)
 - **Dockerfile** — replaced single-stage dev image with 3-stage multi-stage build:
   - `deps` stage: `node:20-alpine`, `npm ci --omit=dev` (production deps only)
   - `build` stage: full deps + `npm run build` (TypeScript compile)
@@ -112,15 +112,15 @@ Backend: NestJS + TypeORM + PostgreSQL (PostGIS) + Redis + LiveKit.
 - **`.github/workflows/deploy.yml`** — GitHub Actions CI/CD pipeline (push to `main` + manual dispatch):
   - **Job 1 `test`**: checkout → Node 20 → `npm ci` → `npm run build` (TS check) → `npm test --passWithNoTests --forceExit`
   - **Job 2 `build-and-push`** (needs: test): `docker/login-action` + `docker/build-push-action` → pushes `myrideprod.azurecr.io/myride-api:{sha}` + `:latest` to ACR
-  - **Job 3 `deploy`** (needs: build-and-push): `azure/container-apps-deploy-action` + `az containerapp update` to set all env vars (DB, Redis, JWT, Firebase, LiveKit) from secrets
-- **`AZURE_SETUP.md`** — step-by-step Azure CLI guide:
-  - All 6 Azure resources + LiveKit Cloud (exact `az` commands, `centralindia` region)
-  - GitHub Secrets & Variables table, how to get each value
-  - App secrets (`az containerapp secret set`) + env var references
-  - PostGIS extension setup (`CREATE EXTENSION postgis; CREATE EXTENSION "uuid-ossp";`)
-  - Estimated cost table: ~$40–55/month total
-  - Firewall/networking notes for Container Apps → Postgres/Redis
-  - Custom domain + automatic TLS certificate setup
+  - **Job 3 `deploy`** (needs: build-and-push): `azure/webapps-deploy@v3` + `az webapp config appsettings set` to set all env vars (DB, Redis, JWT, Firebase, LiveKit) from secrets
+- **Azure resources created** (all in `Attars` RG, `centralindia`):
+  - ACR: `myrideprod.azurecr.io` (Basic tier)
+  - PostgreSQL Flexible Server: `myride-db.postgres.database.azure.com:5432` (B1ms, PG16, PostGIS+uuid-ossp enabled)
+  - Web App: `myride-api.azurewebsites.net` (Linux container, on shared ASP-Attars-bc47 B1 plan)
+  - Reusing: Redis Enterprise `attars.centralindia.redis.azure.net:10000`, Storage, Front Door
+- **GitHub secrets set**: `AZURE_CREDENTIALS`, `AZURE_REGISTRY_LOGIN_SERVER/USERNAME/PASSWORD`, `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `FRONTEND_URL`
+- **GitHub variables set**: `AZURE_RESOURCE_GROUP=Attars`, `AZURE_WEBAPP_NAME=myride-api`
+- **`AZURE_SETUP.md`** — updated to reflect actual resources (App Service not Container Apps, shared Redis Enterprise, real cost ~$20/mo new resources, outbound IPs)
 
 ### ❌ Not Yet Built (next priorities)
 1. **LiveKit voice token endpoint** — `/voice-call/token`
@@ -304,8 +304,12 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 - `VoiceCallModule` already has a `voice-call` namespace; add the `AccessToken` + `RoomServiceClient` from `livekit-server-sdk`
 
 ## CI/CD & Deployment
-- **GitHub Actions pipeline**: `.github/workflows/deploy.yml` — test → build (ACR) → deploy (Azure Container Apps)
-- **Azure setup guide**: `AZURE_SETUP.md` — all `az` CLI commands, GitHub secrets, PostGIS setup, cost table
+- **GitHub Actions pipeline**: `.github/workflows/deploy.yml` — test → build (ACR) → deploy (Azure App Service Web App)
+- **Deploy target**: `https://myride-api.azurewebsites.net` (Linux container on shared ASP-Attars-bc47)
+- **Azure setup guide**: `AZURE_SETUP.md` — all `az` CLI commands, GitHub secrets (already set), cost table (~$20/mo)
+- **LiveKit self-hosted guide**: `LIVEKIT_SELF_HOSTED.md` — Azure VM setup for WebRTC UDP support
+- **GitHub secrets already configured**: AZURE_CREDENTIALS, ACR creds, DATABASE_URL, REDIS_URL, JWT_SECRET
+- **Still needed**: Set `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_WS_URL` once LiveKit account is created
 ## Standing Instructions for Claude (applies on any machine)
 
 ### After Every Git Push — MANDATORY
