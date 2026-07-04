@@ -307,9 +307,12 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 - **GitHub Actions pipeline**: `.github/workflows/deploy.yml` — test → build (ACR) → deploy (Azure App Service Web App)
 - **Deploy target**: `https://myride-api.azurewebsites.net` (Linux container on shared ASP-Attars-bc47)
 - **Azure setup guide**: `AZURE_SETUP.md` — all `az` CLI commands, GitHub secrets (already set), cost table (~$20/mo)
+- **LiveKit VM**: `vm-myride-livekit` @ `20.193.246.194` (Standard_B1s, Ubuntu 22.04, Attars RG)
+  - LiveKit 1.13.3 running and healthy, `restart: always`, ports 7880/7881/50000-50100/UDP open in NSG
+  - Credentials: API key `myride-prod-key`, secret stored in `/etc/livekit.env` on VM
+  - Auto-deploy via `.github/workflows/deploy-livekit.yml` on changes to livekit config files
 - **LiveKit self-hosted guide**: `LIVEKIT_SELF_HOSTED.md` — Azure VM setup for WebRTC UDP support
-- **GitHub secrets already configured**: AZURE_CREDENTIALS, ACR creds, DATABASE_URL, REDIS_URL, JWT_SECRET
-- **Still needed**: Set `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_WS_URL` once LiveKit account is created
+- **GitHub secrets already configured**: AZURE_CREDENTIALS, ACR creds, DATABASE_URL, REDIS_URL, JWT_SECRET, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_WS_URL, LIVEKIT_VM_HOST/USER/SSH_KEY
 ## Standing Instructions for Claude (applies on any machine)
 
 ### After Every Git Push — MANDATORY
