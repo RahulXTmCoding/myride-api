@@ -134,6 +134,9 @@ export class AuthService {
       success: true,
       expires_in: OTP_TTL_SECONDS,
       resend_after: RESEND_COOLDOWN_SECONDS,
+      // Dev-only convenience: OTP returned in response so callers don't need
+      // server log access. NEVER included when NODE_ENV=production.
+      ...(isProd ? {} : { dev_otp: otp }),
     };
   }
 
