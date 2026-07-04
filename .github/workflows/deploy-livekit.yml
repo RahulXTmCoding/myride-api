@@ -52,7 +52,7 @@ jobs:
             echo "==> Waiting for LiveKit to be healthy..."
             sleep 5
             for i in $(seq 1 10); do
-              if wget --no-verbose --tries=1 --spider http://localhost:7881/ 2>/dev/null; then
+              if wget --no-verbose --tries=1 --spider http://localhost:7880/ 2>/dev/null; then
                 echo "✅ LiveKit is healthy (attempt $i)"
                 break
               fi

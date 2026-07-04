@@ -1,14 +1,16 @@
 # LiveKit production config for Azure VM deployment
 #
+# VM public IP: 20.193.246.194 (static, resource: pip-livekit in Attars RG)
+#
 # Differences from local dev (livekit.yaml):
-#   - use_external_ip: true  — LiveKit queries Azure IMDS to get the VM's public IP
-#                              and advertises it in ICE candidates so Android clients
-#                              can reach the media ports from outside the VM
-#   - node_ip is NOT set     — auto-detected via external IP discovery
-#   - keys are loaded from   — environment variable LIVEKIT_KEYS at runtime
-#                              (set in /etc/livekit.env on the VM, never committed)
-#   - turn/stun enabled      — built-in TURN over TLS port 443 so clients behind
-#                              strict firewalls that block UDP can still connect
+#   - use_external_ip: false  — IP pinned explicitly to avoid STUN validation
+#                               timeout on Azure VMs (STUN times out ~5s)
+#   - node_ip: 20.193.246.194 — advertised in ICE candidates so Android clients
+#                               can reach the media ports from outside the VM
+#   - keys loaded from        — environment variable LIVEKIT_KEYS at runtime
+#                               (set in /etc/livekit.env on the VM, never committed)
+#   - turn disabled           — no domain name for TLS cert; TCP fallback on 7881
+#                               handles clients behind UDP-blocking firewalls
 #
 # Deploy: docker compose -f docker-compose.livekit.yml up -d
 
@@ -24,18 +26,16 @@ rtc:
   # TCP fallback for WebRTC (clients behind firewalls that block UDP)
   tcp_port: 7881
 
-  # Auto-detect the VM's public IP via Azure IMDS / external IP check
-  # LiveKit calls https://api.ipify.org to discover the public IP
-  use_external_ip: true
+  # Pin the public IP explicitly — avoids STUN validation timeout on Azure
+  # Update this if the VM's static IP ever changes
+  use_external_ip: false
+  node_ip: 20.193.246.194
 
-# Built-in TURN server — lets clients behind strict corporate firewalls connect
-# via TLS on port 443 instead of UDP. Uses the same VM public IP.
+# TURN disabled — no domain name available for TLS cert.
+# TCP fallback on port 7881 handles clients behind UDP-blocking firewalls.
+# Re-enable with a real domain + cert if deeper firewall penetration is needed.
 turn:
-  enabled: true
-  domain: ""        # Leave blank — LiveKit uses the public IP directly
-  tls_port: 3478    # TURN/TLS port — add to Azure NSG
-  udp_port: 3478    # TURN/UDP port — add to Azure NSG
-  external_tls: false
+  enabled: false
 
 # API keys — loaded from LIVEKIT_KEYS environment variable at runtime
 # Format of env var:  LIVEKIT_KEYS="apikey1: apisecret1"
