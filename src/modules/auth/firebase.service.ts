@@ -1,6 +1,9 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 @Injectable()
 export class FirebaseService implements OnModuleInit {
@@ -24,20 +27,18 @@ export class FirebaseService implements OnModuleInit {
     }
 
     try {
-      const serviceAccountPath = this.configService.get(
-        'FIREBASE_SERVICE_ACCOUNT_PATH',
-      );
-
-      if (!serviceAccountPath) {
+      // Resolve service account: prefer file path, fall back to base64 env var
+      const serviceAccount = this.resolveServiceAccount();
+      if (!serviceAccount) {
         this.logger.warn(
-          '⚠️  FIREBASE_SERVICE_ACCOUNT_PATH not set - Firebase disabled',
+          '⚠️  No Firebase credentials found (set FIREBASE_SERVICE_ACCOUNT_PATH or FIREBASE_SERVICE_ACCOUNT_JSON) - Firebase disabled',
         );
         this.isEnabled = false;
         return;
       }
 
       this.app = admin.initializeApp({
-        credential: admin.credential.cert(require(serviceAccountPath)),
+        credential: admin.credential.cert(serviceAccount as admin.ServiceAccount),
       });
 
       this.logger.log('✅ Firebase initialized successfully');
@@ -46,6 +47,39 @@ export class FirebaseService implements OnModuleInit {
       this.logger.warn('Falling back to console-based OTP');
       this.isEnabled = false;
     }
+  }
+
+  /**
+   * Resolve Firebase service account from one of two sources:
+   * 1. FIREBASE_SERVICE_ACCOUNT_PATH — path to a JSON file on disk (local dev / mounted secret)
+   * 2. FIREBASE_SERVICE_ACCOUNT_JSON — base64-encoded JSON string (Azure App Service env var)
+   */
+  private resolveServiceAccount(): object | null {
+    // Option 1: file path (local dev, docker mount)
+    const filePath = this.configService.get<string>('FIREBASE_SERVICE_ACCOUNT_PATH');
+    if (filePath) {
+      try {
+        if (fs.existsSync(filePath)) {
+          return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        }
+        this.logger.warn(`⚠️  FIREBASE_SERVICE_ACCOUNT_PATH set but file not found at: ${filePath}`);
+      } catch (e) {
+        this.logger.warn(`⚠️  Could not read service account file: ${e.message}`);
+      }
+    }
+
+    // Option 2: base64-encoded JSON in env var (Azure App Service / CI)
+    const b64Json = this.configService.get<string>('FIREBASE_SERVICE_ACCOUNT_JSON');
+    if (b64Json) {
+      try {
+        const json = Buffer.from(b64Json, 'base64').toString('utf8');
+        return JSON.parse(json);
+      } catch (e) {
+        this.logger.warn(`⚠️  Could not parse FIREBASE_SERVICE_ACCOUNT_JSON: ${e.message}`);
+      }
+    }
+
+    return null;
   }
 
   /**
