@@ -47,19 +47,8 @@ import { CHAT_REDIS } from './chat.service';
 @WebSocketGateway({
   namespace: '/chat',
   cors: {
-    origin: (
-      origin: string,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
-      const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') ?? [];
-      const isDev = process.env.NODE_ENV !== 'production';
-      if (isDev || !origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('CORS: origin not allowed'));
-      }
-    },
-    credentials: true,
+    origin: true, // Allow all origins — mobile apps send no Origin header.
+    credentials: true, // Security is enforced by WsJwtGuard, not CORS.
   },
 })
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
