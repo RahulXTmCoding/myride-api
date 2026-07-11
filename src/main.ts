@@ -14,13 +14,11 @@ async function bootstrap() {
   app.use(helmet());
 
   // CORS configuration
+  // React Native mobile apps don't send an Origin header (or send "null"),
+  // so we must allow all origins. REST API is protected by JWT; Socket.IO
+  // is protected by WsJwtGuard — CORS is not the security boundary here.
   app.enableCors({
-    origin: [
-      configService.get('FRONTEND_URL'),
-      'http://localhost:8081', // Expo dev server
-      'http://localhost:19000', // Expo web
-      'http://localhost:19006', // Expo web alternative
-    ],
+    origin: true, // reflect any origin — safe because auth is JWT-gated
     credentials: true,
   });
 
