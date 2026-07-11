@@ -67,6 +67,16 @@ export class TripMetadataDto {
   vehicle_type?: 'bike' | 'car' | 'van' | 'other';
 
   @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  vehicle_other?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  cover_image_id?: string;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
