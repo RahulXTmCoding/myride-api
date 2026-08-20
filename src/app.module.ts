@@ -15,6 +15,7 @@ import { LocationModule } from './modules/location/location.module';
 import { CommunityModule } from './modules/community/community.module';
 import { UsersModule } from './modules/users/users.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { VersionModule } from './modules/version/version.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
     CommunityModule,
     UsersModule,
     NotificationsModule,
+    VersionModule,
   ],
   controllers: [AppController],
   providers: [AppService],
