@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "capacitor-splash-screen": {
+      "source": "cap-go/capacitor-skills",
+      "sourceType": "github",
+      "skillPath": "skills/capacitor-splash-screen/SKILL.md",
+      "computedHash": "21e4f3900a6f663a9e2edef70e6104d458bed7caedb4792046ee698054047cbd"
+    }
+  }
+}

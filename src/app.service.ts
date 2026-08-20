@@ -68,6 +68,7 @@ export class AppService implements OnModuleInit, OnModuleDestroy {
       status: database && redis ? 'ok' : 'degraded',
       database: database ? 'ok' : 'down',
       redis: redis ? 'ok' : 'down',
+      support_email: 'support@mirailabs.co.in',
       timestamp: new Date().toISOString(),
     };
   }
